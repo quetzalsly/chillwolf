@@ -2,37 +2,48 @@
 // chill.cpp
 // Chocolate Wolfenstein 3D
 //
-// Optional "chill" quality-of-life overlays.
+// Optional quality-of-life overlays.
 //
 
 #include "chill.h"
+#include "pathfind.h"
 
 #include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
-chillmode_t ChillMode = chillmode_Off;
+highlightmode_t HighlightMode = highlightmode_Off;
+pathfindmode_t PathfindMode = pathfindmode_Off;
 
-const char *ChillModeStrings[chillmode_Count] =
+const char *HighlightModeStrings[highlightmode_Count] =
 {
     "Off",
     "Pushable tile highlight"
 };
 
-static const int CHILL_MESSAGE_TICS = 70;
-static const int CHILL_TEXT_X = 4;
-static const int CHILL_TEXT_Y = 4;
-static const int CHILL_BLUE_R = 0;
-static const int CHILL_BLUE_G = 0;
-static const int CHILL_BLUE_B = 255;
-static const int CHILL_TEXT_R = 255;
-static const int CHILL_TEXT_G = 255;
-static const int CHILL_TEXT_B = 255;
+const char *PathfindModeStrings[pathfindmode_Count] =
+{
+    "Off",
+    "Closest pushable tile"
+};
 
 static longword ChillMessageStartTime = 0;
+static char ChillMessageText[80];
+
 static uint32_t ChillPaletteSignature = 0;
 static boolean ChillColorTablesReady = false;
-static byte ChillBlue50Table[256];
+static byte ChillPushableHighlightTable[256];
+static byte ChillPathGlowTable[256];
+static byte ChillPathTrailTable[256];
+static byte ChillPathArrowTable[256];
+static byte ChillPathArrowHotTable[256];
 static byte ChillWhiteFadeTable[16][256];
+
+static ChillPathPoint ChillPath[CHILL_PATHFIND_MAX_PATH];
+static fixed ChillPathWorldX[CHILL_PATH_MAX_DRAW_POINTS];
+static fixed ChillPathWorldY[CHILL_PATH_MAX_DRAW_POINTS];
+static int ChillPathCumulativeDistance[CHILL_PATH_MAX_DRAW_POINTS];
 
 static boolean Chill_IsInGameLevel(void)
 {
@@ -108,56 +119,109 @@ static void Chill_EnsureColorTables(void)
 
     for(int i = 0; i < 256; i++)
     {
-        ChillBlue50Table[i] = Chill_BlendPaletteIndex((byte)i, CHILL_BLUE_R, CHILL_BLUE_G, CHILL_BLUE_B, 128);
+        ChillPushableHighlightTable[i] = Chill_BlendPaletteIndex
+        (
+            (byte)i,
+            CHILL_PUSHABLE_HIGHLIGHT_R,
+            CHILL_PUSHABLE_HIGHLIGHT_G,
+            CHILL_PUSHABLE_HIGHLIGHT_B,
+            CHILL_PUSHABLE_HIGHLIGHT_ALPHA
+        );
+
+        ChillPathGlowTable[i] = Chill_BlendPaletteIndex
+        (
+            (byte)i,
+            CHILL_PATH_GLOW_R,
+            CHILL_PATH_GLOW_G,
+            CHILL_PATH_GLOW_B,
+            CHILL_PATH_GLOW_ALPHA
+        );
+
+        ChillPathTrailTable[i] = Chill_BlendPaletteIndex
+        (
+            (byte)i,
+            CHILL_PATH_TRAIL_R,
+            CHILL_PATH_TRAIL_G,
+            CHILL_PATH_TRAIL_B,
+            CHILL_PATH_TRAIL_ALPHA
+        );
+
+        ChillPathArrowTable[i] = Chill_BlendPaletteIndex
+        (
+            (byte)i,
+            CHILL_PATH_ARROW_R,
+            CHILL_PATH_ARROW_G,
+            CHILL_PATH_ARROW_B,
+            CHILL_PATH_ARROW_ALPHA
+        );
+
+        ChillPathArrowHotTable[i] = Chill_BlendPaletteIndex
+        (
+            (byte)i,
+            CHILL_PATH_ARROW_HOT_R,
+            CHILL_PATH_ARROW_HOT_G,
+            CHILL_PATH_ARROW_HOT_B,
+            CHILL_PATH_ARROW_HOT_ALPHA
+        );
     }
 
     for(int alphaStep = 0; alphaStep < 16; alphaStep++)
     {
-        int alpha = (alphaStep * 255) / 15;
+        int alpha = (alphaStep * CHILL_TEXT_ALPHA) / 15;
 
         for(int i = 0; i < 256; i++)
         {
-            ChillWhiteFadeTable[alphaStep][i] = Chill_BlendPaletteIndex((byte)i, CHILL_TEXT_R, CHILL_TEXT_G, CHILL_TEXT_B, alpha);
+            ChillWhiteFadeTable[alphaStep][i] = Chill_BlendPaletteIndex
+            (
+                (byte)i,
+                CHILL_TEXT_R,
+                CHILL_TEXT_G,
+                CHILL_TEXT_B,
+                alpha
+            );
         }
     }
 }
 
-static void Chill_ShowModeMessage(void)
+static void Chill_ShowModeMessage(const char *prefix, const char *modeName)
 {
+    snprintf(ChillMessageText, sizeof(ChillMessageText), "%s: %s", prefix, modeName);
+    ChillMessageText[sizeof(ChillMessageText) - 1] = 0;
     ChillMessageStartTime = GetTimeCount();
 }
 
 boolean Chill_OnKeyPress(int key)
 {
-    if(key != SDLK_BACKQUOTE)
-    {
-        return false;
-    }
-
     if(!Chill_IsInGameLevel())
     {
         return false;
     }
 
-    ChillMode = (chillmode_t)((ChillMode + 1) % chillmode_Count);
-    Chill_ShowModeMessage();
+    if(key == CHILL_HIGHLIGHT_MODE_KEY)
+    {
+        HighlightMode = (highlightmode_t)((HighlightMode + 1) % highlightmode_Count);
+        Chill_ShowModeMessage("Highlight mode", HighlightModeStrings[HighlightMode]);
+        return true;
+    }
 
-    return true;
+    if(key == CHILL_PATHFIND_MODE_KEY)
+    {
+        PathfindMode = (pathfindmode_t)((PathfindMode + 1) % pathfindmode_Count);
+        Chill_ShowModeMessage("Pathfind mode", PathfindModeStrings[PathfindMode]);
+        return true;
+    }
+
+    return false;
 }
 
 boolean Chill_IsPushableTile(int tilex, int tiley)
 {
-    if(tilex < 0 || tiley < 0 || tilex >= mapwidth || tiley >= mapheight || mapsegs[1] == NULL)
-    {
-        return false;
-    }
-
-    return *(mapsegs[1] + (tiley << mapshift) + tilex) == PUSHABLETILE;
+    return ChillPathfinder::IsPushableTile(tilex, tiley);
 }
 
-void Chill_HookWorld(byte *vidbuf, unsigned pitch, int screenx, int wallheight, boolean isPushableTile)
+void Chill_HookWallPost(byte *vidbuf, unsigned pitch, int screenx, int wallheight, boolean isPushableTile)
 {
-    if(!Chill_IsInGameLevel() || ChillMode != chillmode_PushableTileHighlight || !isPushableTile || vidbuf == NULL)
+    if(!Chill_IsInGameLevel() || HighlightMode != highlightmode_PushableTileHighlight || !isPushableTile || vidbuf == NULL)
     {
         return;
     }
@@ -193,8 +257,332 @@ void Chill_HookWorld(byte *vidbuf, unsigned pitch, int screenx, int wallheight, 
 
     for(int y = top; y <= bottom; y++)
     {
-        *dest = ChillBlue50Table[*dest];
+        *dest = ChillPushableHighlightTable[*dest];
         dest += pitch;
+    }
+}
+
+static int Chill_ApproxDistance(fixed dx, fixed dy)
+{
+    int adx = ABS(dx);
+    int ady = ABS(dy);
+
+    if(adx > ady)
+    {
+        return adx + (ady >> 1);
+    }
+
+    return ady + (adx >> 1);
+}
+
+static int Chill_GetPositiveModulo(int value, int modulo)
+{
+    int result = value % modulo;
+
+    if(result < 0)
+    {
+        result += modulo;
+    }
+
+    return result;
+}
+
+static boolean Chill_BuildWorldPath(int pathLength)
+{
+    if(pathLength < 2 || pathLength > CHILL_PATH_MAX_DRAW_POINTS)
+    {
+        return false;
+    }
+
+    for(int i = 0; i < pathLength; i++)
+    {
+        ChillPathWorldX[i] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
+        ChillPathWorldY[i] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
+        ChillPathCumulativeDistance[i] = 0;
+    }
+
+    // Make the path feel attached to the player instead of the center of the
+    // player's current tile.
+    ChillPathWorldX[0] = player->x;
+    ChillPathWorldY[0] = player->y;
+
+    for(int i = 1; i < pathLength; i++)
+    {
+        fixed dx = ChillPathWorldX[i] - ChillPathWorldX[i - 1];
+        fixed dy = ChillPathWorldY[i] - ChillPathWorldY[i - 1];
+        ChillPathCumulativeDistance[i] = ChillPathCumulativeDistance[i - 1] + Chill_ApproxDistance(dx, dy);
+    }
+
+    return true;
+}
+
+static boolean Chill_ScreenFloorPixelToWorld(int screenx, int screeny, fixed *worldx, fixed *worldy)
+{
+    int horizon = viewheight / 2;
+    int row = screeny - horizon;
+
+    if(row <= 0 || worldx == NULL || worldy == NULL || scale == 0)
+    {
+        return false;
+    }
+
+    fixed forward = (fixed)(((int64_t)heightnumerator << 8) / ((int64_t)row * 16));
+
+    if(forward < MINDIST)
+    {
+        return false;
+    }
+
+    fixed side = (fixed)(((int64_t)(screenx - centerx) * forward) / scale);
+
+    fixed gx = FixedMul(forward, viewcos) + FixedMul(side, viewsin);
+    fixed gy = -FixedMul(forward, viewsin) + FixedMul(side, viewcos);
+
+    *worldx = viewx + gx;
+    *worldy = viewy + gy;
+
+    return true;
+}
+
+static boolean Chill_IsWorldFloorVisible(fixed worldx, fixed worldy)
+{
+    int tilex = worldx >> TILESHIFT;
+    int tiley = worldy >> TILESHIFT;
+
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return false;
+    }
+
+    return spotvis[tilex][tiley] ? true : false;
+}
+
+static int Chill_EvaluatePathPixel(fixed worldx, fixed worldy, int pathLength, int animationPhase)
+{
+    int bestSegment = -1;
+    int bestT = 0;
+    int bestSegmentLength = 0;
+    int64_t bestDistanceSquared = (int64_t)CHILL_PATH_GLOW_HALF_WIDTH_GLOBAL * CHILL_PATH_GLOW_HALF_WIDTH_GLOBAL + 1;
+
+    for(int i = 0; i < pathLength - 1; i++)
+    {
+        fixed ax = ChillPathWorldX[i];
+        fixed ay = ChillPathWorldY[i];
+        fixed bx = ChillPathWorldX[i + 1];
+        fixed by = ChillPathWorldY[i + 1];
+        fixed dx = bx - ax;
+        fixed dy = by - ay;
+        int64_t lengthSquared = (int64_t)dx * dx + (int64_t)dy * dy;
+
+        if(lengthSquared <= 0)
+        {
+            continue;
+        }
+
+        int64_t dot = (int64_t)(worldx - ax) * dx + (int64_t)(worldy - ay) * dy;
+        int t = (int)((dot * 1024) / lengthSquared);
+
+        if(t < 0)
+        {
+            t = 0;
+        }
+        else if(t > 1024)
+        {
+            t = 1024;
+        }
+
+        fixed nearestX = ax + (fixed)(((int64_t)dx * t) / 1024);
+        fixed nearestY = ay + (fixed)(((int64_t)dy * t) / 1024);
+        fixed ndx = worldx - nearestX;
+        fixed ndy = worldy - nearestY;
+        int64_t distanceSquared = (int64_t)ndx * ndx + (int64_t)ndy * ndy;
+
+        if(distanceSquared < bestDistanceSquared)
+        {
+            bestDistanceSquared = distanceSquared;
+            bestSegment = i;
+            bestT = t;
+            bestSegmentLength = Chill_ApproxDistance(dx, dy);
+        }
+    }
+
+    if(bestSegment < 0)
+    {
+        return 0;
+    }
+
+    int64_t trailHalfWidthSquared = (int64_t)CHILL_PATH_TRAIL_HALF_WIDTH_GLOBAL * CHILL_PATH_TRAIL_HALF_WIDTH_GLOBAL;
+    int64_t arrowHalfWidthSquared = (int64_t)CHILL_PATH_ARROW_HALF_WIDTH_GLOBAL * CHILL_PATH_ARROW_HALF_WIDTH_GLOBAL;
+
+    int level = 1;
+
+    if(bestDistanceSquared <= trailHalfWidthSquared)
+    {
+        level = 2;
+    }
+
+    int along = ChillPathCumulativeDistance[bestSegment] + (int)(((int64_t)bestSegmentLength * bestT) / 1024);
+    int localArrow = Chill_GetPositiveModulo(along - animationPhase, CHILL_PATH_ARROW_SPACING_GLOBAL);
+
+    if(localArrow < CHILL_PATH_ARROW_LENGTH_GLOBAL)
+    {
+        // localArrow runs from the rear of the animated arrow toward its nose.
+        // Keep the tail wide and taper down toward the destination so the
+        // triangle points in the same direction as the path.
+        int distanceToTip = CHILL_PATH_ARROW_LENGTH_GLOBAL - localArrow;
+        int arrowHalfWidth = (CHILL_PATH_ARROW_HALF_WIDTH_GLOBAL * distanceToTip) / CHILL_PATH_ARROW_LENGTH_GLOBAL;
+
+        if(arrowHalfWidth < CHILL_PATH_TRAIL_HALF_WIDTH_GLOBAL)
+        {
+            arrowHalfWidth = CHILL_PATH_TRAIL_HALF_WIDTH_GLOBAL;
+        }
+
+        int64_t arrowWidthSquared = (int64_t)arrowHalfWidth * arrowHalfWidth;
+
+        if(bestDistanceSquared <= arrowWidthSquared && bestDistanceSquared <= arrowHalfWidthSquared)
+        {
+            level = 3;
+
+            if(localArrow > (CHILL_PATH_ARROW_LENGTH_GLOBAL * 4) / 5 && bestDistanceSquared <= trailHalfWidthSquared)
+            {
+                level = 4;
+            }
+        }
+    }
+
+    return level;
+}
+
+static void Chill_ApplyPathPixel(byte *pixel, int level)
+{
+    switch(level)
+    {
+        case 1:
+            *pixel = ChillPathGlowTable[*pixel];
+            break;
+
+        case 2:
+            *pixel = ChillPathTrailTable[*pixel];
+            break;
+
+        case 3:
+            *pixel = ChillPathArrowTable[*pixel];
+            break;
+
+        case 4:
+            *pixel = ChillPathArrowHotTable[*pixel];
+            break;
+
+        default:
+            break;
+    }
+}
+
+static int Chill_GetWallFloorStartY(int screenx)
+{
+    int floorStartY = viewheight / 2 + (wallheight[screenx] >> 4) + 1;
+
+    if(floorStartY < viewheight / 2 + 1)
+    {
+        floorStartY = viewheight / 2 + 1;
+    }
+
+    if(floorStartY > viewheight)
+    {
+        floorStartY = viewheight;
+    }
+
+    return floorStartY;
+}
+
+static void Chill_DrawFloorRasterPath(byte *vidbuf, unsigned pitch, int pathLength)
+{
+    int animationPhase = (int)((GetTimeCount() * CHILL_PATH_ARROW_SPEED_GLOBAL_PER_TIC) % CHILL_PATH_ARROW_SPACING_GLOBAL);
+    int horizon = viewheight / 2;
+
+    for(int y = horizon + 1; y < viewheight; y++)
+    {
+        byte *row = vidbuf + y * pitch;
+
+        for(int x = 0; x < viewwidth; x++)
+        {
+            if(y < Chill_GetWallFloorStartY(x))
+            {
+                continue;
+            }
+
+            fixed worldx;
+            fixed worldy;
+
+            if(!Chill_ScreenFloorPixelToWorld(x, y, &worldx, &worldy))
+            {
+                continue;
+            }
+
+            if(!Chill_IsWorldFloorVisible(worldx, worldy))
+            {
+                continue;
+            }
+
+            int level = Chill_EvaluatePathPixel(worldx, worldy, pathLength, animationPhase);
+
+            if(level)
+            {
+                Chill_ApplyPathPixel(&row[x], level);
+            }
+        }
+    }
+}
+
+static void Chill_DrawClosestPushablePath(byte *vidbuf, unsigned pitch)
+{
+    int pathLength = 0;
+    int targetX = -1;
+    int targetY = -1;
+
+    if(!ChillPathfinder::FindClosestPushableTile(ChillPath, CHILL_PATHFIND_MAX_PATH, &pathLength, &targetX, &targetY))
+    {
+        return;
+    }
+
+    if(pathLength < 2)
+    {
+        return;
+    }
+
+    if(pathLength > CHILL_PATH_MAX_DRAW_POINTS)
+    {
+        pathLength = CHILL_PATH_MAX_DRAW_POINTS;
+    }
+
+    if(!Chill_BuildWorldPath(pathLength))
+    {
+        return;
+    }
+
+    Chill_DrawFloorRasterPath(vidbuf, pitch, pathLength);
+
+    (void)targetX;
+    (void)targetY;
+}
+
+void Chill_HookWorld(byte *vidbuf, unsigned pitch)
+{
+    if(!Chill_IsInGameLevel() || vidbuf == NULL)
+    {
+        return;
+    }
+
+    Chill_EnsureColorTables();
+
+    switch(PathfindMode)
+    {
+        case pathfindmode_ClosestPushableTile:
+            Chill_DrawClosestPushablePath(vidbuf, pitch);
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -290,7 +678,7 @@ void Chill_HookOverlay(void)
         return;
     }
 
-    int alpha = ((CHILL_MESSAGE_TICS - (int)elapsed) * 255) / CHILL_MESSAGE_TICS;
+    int alpha = ((CHILL_MESSAGE_TICS - (int)elapsed) * CHILL_TEXT_ALPHA) / CHILL_MESSAGE_TICS;
 
-    Chill_DrawFadeText(ChillModeStrings[ChillMode], CHILL_TEXT_X, CHILL_TEXT_Y, alpha);
+    Chill_DrawFadeText(ChillMessageText, CHILL_TEXT_X, CHILL_TEXT_Y, alpha);
 }

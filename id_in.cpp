@@ -361,7 +361,7 @@ static void processEvent(SDL_Event *event)
 
             if(Chill_OnKeyPress(LastScan))
             {
-                IN_ClearKeysDown();
+                IN_ClearKey(LastScan);
                 return;
             }
 

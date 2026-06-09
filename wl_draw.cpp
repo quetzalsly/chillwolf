@@ -330,7 +330,7 @@ void ScalePost()
         yendoffs -= vbufPitch;
     }
 
-    Chill_HookWorld(vbuf, vbufPitch, postx, wallheight[postx], postIsPushableTile);
+    Chill_HookWallPost(vbuf, vbufPitch, postx, wallheight[postx], postIsPushableTile);
 }
 
 void GlobalScalePost(byte *vidbuf, unsigned pitch)
@@ -351,23 +351,22 @@ void GlobalScalePost(byte *vidbuf, unsigned pitch)
 ====================
 */
 
-
 void HitVertWall (void)
 {
     int wallpic;
     int texture;
-    short hity;
+    int hity;
     boolean currentPushableTile;
 
     texture = ((yintercept+texdelta)>>TEXTUREFROMFIXEDSHIFT)&TEXTUREMASK;
+    hity = (int)(yintercept >> TILESHIFT);
+    currentPushableTile = Chill_IsPushableTile(xtile, hity);
+
     if (xtilestep == -1)
     {
         texture = TEXTUREMASK-texture;
         xintercept += TILEGLOBAL;
     }
-
-    hity = (short)(yintercept>>TILESHIFT);
-    currentPushableTile = Chill_IsPushableTile(xtile, hity);
 
     if(lastside==1 && lastintercept==xtile && lasttilehit==tilehit && !(lasttilehit & 0x40)
         && postIsPushableTile == currentPushableTile)
@@ -401,7 +400,7 @@ void HitVertWall (void)
 
     if (tilehit & 0x40)
     {                                                               // check for adjacent doors
-        ytile = hity;
+        ytile = (short)(yintercept>>TILESHIFT);
         if ( tilemap[xtile-xtilestep][ytile]&0x80 )
             wallpic = DOORWALL+3;
         else
@@ -425,22 +424,21 @@ void HitVertWall (void)
 ====================
 */
 
-
 void HitHorizWall (void)
 {
     int wallpic;
     int texture;
-    short hitx;
+    int hitx;
     boolean currentPushableTile;
 
     texture = ((xintercept+texdelta)>>TEXTUREFROMFIXEDSHIFT)&TEXTUREMASK;
+    hitx = (int)(xintercept >> TILESHIFT);
+    currentPushableTile = Chill_IsPushableTile(hitx, ytile);
+
     if (ytilestep == -1)
         yintercept += TILEGLOBAL;
     else
         texture = TEXTUREMASK-texture;
-
-    hitx = (short)(xintercept>>TILESHIFT);
-    currentPushableTile = Chill_IsPushableTile(hitx, ytile);
 
     if(lastside==0 && lastintercept==ytile && lasttilehit==tilehit && !(lasttilehit & 0x40)
         && postIsPushableTile == currentPushableTile)
@@ -474,7 +472,7 @@ void HitHorizWall (void)
 
     if (tilehit & 0x40)
     {                                                               // check for adjacent doors
-        xtile = hitx;
+        xtile = (short)(xintercept>>TILESHIFT);
         if ( tilemap[xtile][ytile-ytilestep]&0x80)
             wallpic = DOORWALL+2;
         else
@@ -1569,7 +1567,7 @@ void    ThreeDRefresh (void)
 
     WallRefresh ();
 
-    
+    Chill_HookWorld(vbuf, vbufPitch);
 
 //
 // draw all the scaled images
