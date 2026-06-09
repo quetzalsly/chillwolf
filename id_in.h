@@ -167,6 +167,7 @@ void    IN_WaitAndProcessEvents();
 void    IN_ProcessEvents();
 
 int     IN_MouseButtons (void);
+void    IN_GetMouseDelta(int *dx, int *dy);
 
 boolean IN_JoyPresent();
 void    IN_SetJoyCurrent(int joyIndex);

@@ -152,6 +152,7 @@ void CheckWeaponChange (void)
 =======================
 */
 
+
 void ControlMovement (objtype *ob)
 {
     int32_t oldx,oldy;
@@ -223,7 +224,25 @@ void ControlMovement (objtype *ob)
             ob->angle -= ANGLES;
         if (ob->angle < 0)
             ob->angle += ANGLES;
+    }
 
+    //
+    // mouse-only turning
+    //
+    // Keep this separate from controlx so mouse movement never becomes
+    // player movement, even while a strafe action is held.
+    //
+    if (mousexturn)
+    {
+        anglefrac += mousexturn;
+        angleunits = anglefrac/ANGLESCALE;
+        anglefrac -= angleunits*ANGLESCALE;
+        ob->angle -= angleunits;
+
+        if (ob->angle >= ANGLES)
+            ob->angle -= ANGLES;
+        if (ob->angle < 0)
+            ob->angle += ANGLES;
     }
 
     //

@@ -73,6 +73,7 @@ memptr demobuffer;
 // current user input
 //
 int controlx, controly;         // range from -100 to 100 per tic
+int mousexturn;                  // mouse-only turning; never strafes
 boolean buttonstate[NUMBUTTONS];
 
 int lastgamemusicoffset = 0;
@@ -266,19 +267,24 @@ void PollKeyboardButtons (void)
 ===================
 */
 
+
 void PollMouseButtons (void)
 {
     int buttons = IN_MouseButtons ();
 
-    if (buttons & 1)
-        buttonstate[buttonmouse[0]] = true;
-    if (buttons & 2)
-        buttonstate[buttonmouse[1]] = true;
-    if (buttons & 4)
-        buttonstate[buttonmouse[2]] = true;
+    for(int i = 0; i < 4; i++)
+    {
+        if(buttons & (1 << i))
+        {
+            int action = buttonmouse[i];
+
+            if(action >= 0 && action < NUMBUTTONS)
+            {
+                buttonstate[action] = true;
+            }
+        }
+    }
 }
-
-
 
 /*
 ===================
@@ -331,21 +337,19 @@ void PollKeyboardMove (void)
 ===================
 */
 
+
 void PollMouseMove (void)
 {
-    int mousexmove, mouseymove;
+    int mousexmove;
+    int mouseymove;
 
-    SDL_GetMouseState(&mousexmove, &mouseymove);
-    if(IN_IsInputGrabbed())
-        IN_CenterMouse();
+    IN_GetMouseDelta(&mousexmove, &mouseymove);
 
-    mousexmove -= screenWidth / 2;
-    mouseymove -= screenHeight / 2;
-
-    controlx += mousexmove * 10 / (13 - mouseadjustment);
-    controly += mouseymove * 20 / (13 - mouseadjustment);
+    // Horizontal mouse movement is camera turn only. It deliberately does
+    // not feed controly, and it is kept separate from controlx so holding
+    // a strafe action cannot turn mouse movement into player movement.
+    mousexturn += mousexmove * 10 / (13 - mouseadjustment);
 }
-
 
 /*
 ===================
@@ -417,6 +421,7 @@ void PollControls (void)
 
     controlx = 0;
     controly = 0;
+    mousexturn = 0;
     memcpy (buttonheld, buttonstate, sizeof (buttonstate));
     memset (buttonstate, 0, sizeof (buttonstate));
 
@@ -481,6 +486,11 @@ void PollControls (void)
         controly = max;
     else if (controly < min)
         controly = min;
+
+    if (mousexturn > max)
+        mousexturn = max;
+    else if (mousexturn < min)
+        mousexturn = min;
 
     if (demorecord)
     {

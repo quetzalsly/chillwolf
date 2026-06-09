@@ -2283,18 +2283,15 @@ EnterCtrlData (int index, CustomCtrls * cust, void (*DrawRtn) (int), void (*Prin
                 {
                     case MOUSE:
                         button = IN_MouseButtons();
-                        switch (button)
-                        {
-                            case 1:
-                                result = 1;
-                                break;
-                            case 2:
-                                result = 2;
-                                break;
-                            case 4:
-                                result = 3;
-                                break;
-                        }
+
+                        if (button & 1)
+                            result = 1;
+                        else if (button & 2)
+                            result = 2;
+                        else if (button & 4)
+                            result = 3;
+                        else if (button & 8)
+                            result = 4;
 
                         if (result)
                         {
@@ -3602,6 +3599,7 @@ WaitKeyUp (void)
 // READ KEYBOARD, JOYSTICK AND MOUSE FOR INPUT
 //
 ////////////////////////////////////////////////////////////////////
+
 void
 ReadAnyControl (ControlInfo * ci)
 {
@@ -3611,45 +3609,41 @@ ReadAnyControl (ControlInfo * ci)
 
     if (mouseenabled && IN_IsInputGrabbed())
     {
-        int mousex, mousey, buttons;
-        buttons = SDL_GetMouseState(&mousex, &mousey);
-        int middlePressed = buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE);
-        int rightPressed = buttons & SDL_BUTTON(SDL_BUTTON_RIGHT);
-        buttons &= ~(SDL_BUTTON(SDL_BUTTON_MIDDLE) | SDL_BUTTON(SDL_BUTTON_RIGHT));
-        if(middlePressed) buttons |= 1 << 2;
-        if(rightPressed) buttons |= 1 << 1;
+        int mousex;
+        int mousey;
+        int buttons;
 
-        if(mousey - CENTERY < -SENSITIVE)
+        buttons = IN_MouseButtons();
+        IN_GetMouseDelta(&mousex, &mousey);
+
+        if(mousey < -SENSITIVE)
         {
             ci->dir = dir_North;
             mouseactive = 1;
         }
-        else if(mousey - CENTERY > SENSITIVE)
+        else if(mousey > SENSITIVE)
         {
             ci->dir = dir_South;
             mouseactive = 1;
         }
 
-        if(mousex - CENTERX < -SENSITIVE)
+        if(mousex < -SENSITIVE)
         {
             ci->dir = dir_West;
             mouseactive = 1;
         }
-        else if(mousex - CENTERX > SENSITIVE)
+        else if(mousex > SENSITIVE)
         {
             ci->dir = dir_East;
             mouseactive = 1;
         }
-
-        if(mouseactive)
-            IN_CenterMouse();
 
         if (buttons)
         {
             ci->button0 = buttons & 1;
             ci->button1 = buttons & 2;
             ci->button2 = buttons & 4;
-            ci->button3 = false;
+            ci->button3 = buttons & 8;
             mouseactive = 1;
         }
     }
@@ -3679,7 +3673,6 @@ ReadAnyControl (ControlInfo * ci)
         }
     }
 }
-
 
 ////////////////////////////////////////////////////////////////////
 //

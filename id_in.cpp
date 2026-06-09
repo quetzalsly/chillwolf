@@ -144,6 +144,30 @@ static int INL_GetMouseButtons(void)
     return buttons;
 }
 
+
+
+static void IN_ClearMouseDelta(void)
+{
+    int dx;
+    int dy;
+
+    SDL_PumpEvents();
+    SDL_GetRelativeMouseState(&dx, &dy);
+}
+
+void IN_GetMouseDelta(int *dx, int *dy)
+{
+    if(!MousePresent)
+    {
+        *dx = 0;
+        *dy = 0;
+        return;
+    }
+
+    SDL_PumpEvents();
+    SDL_GetRelativeMouseState(dx, dy);
+}
+
 ///////////////////////////////////////////////////////////////////////////
 //
 // IN_GetJoyDelta() - Returns the relative movement of the specified
@@ -284,6 +308,7 @@ boolean IN_JoyPresent()
     return Joystick != NULL;
 }
 
+
 static void IN_UpdateGrabAfterFullscreenToggle(void)
 {
     if(fullscreen || forcegrabmouse)
@@ -296,6 +321,8 @@ static void IN_UpdateGrabAfterFullscreenToggle(void)
         GrabInput = false;
         SDL_WM_GrabInput(SDL_GRAB_OFF);
     }
+
+    IN_ClearMouseDelta();
 }
 
 static void processEvent(SDL_Event *event)
@@ -316,6 +343,7 @@ static void processEvent(SDL_Event *event)
             {
                 GrabInput = !GrabInput;
                 SDL_WM_GrabInput(GrabInput ? SDL_GRAB_ON : SDL_GRAB_OFF);
+                IN_ClearMouseDelta();
                 return;
             }
 
@@ -536,13 +564,15 @@ void IN_Startup(void)
         }
     }
 
-    SDL_EventState(SDL_MOUSEMOTION, SDL_IGNORE);
+    SDL_EventState(SDL_MOUSEMOTION, SDL_ENABLE);
 
     if(fullscreen || forcegrabmouse)
     {
         GrabInput = true;
         SDL_WM_GrabInput(SDL_GRAB_ON);
     }
+
+    IN_ClearMouseDelta();
 
     // I didn't find a way to ask libSDL whether a mouse is present, yet...
     MousePresent = true;
@@ -820,7 +850,9 @@ bool IN_IsInputGrabbed()
     return GrabInput;
 }
 
+
 void IN_CenterMouse()
 {
-    SDL_WarpMouse(screenWidth / 2, screenHeight / 2);
+    IN_ClearMouseDelta();
 }
+
