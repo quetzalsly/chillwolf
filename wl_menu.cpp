@@ -91,32 +91,58 @@ CP_itemtype MainMenu[] = {
 
 CP_itemtype SndMenu[] = {
 #ifdef JAPAN
+
     {1, "", 0},
+
     {1, "", 0},
+
     {1, "", 0},
+
     {0, "", 0},
+
     {0, "", 0},
+
     {1, "", 0},
+
     {1, "", 0},
+
     {1, "", 0},
+
     {0, "", 0},
+
     {0, "", 0},
+
     {1, "", 0},
+
     {1, "", 0},
+
 #else
+
     {1, STR_NONE, 0},
-    {0, STR_PC, 0},
+
+    {1, STR_PC, 0},
+
     {1, STR_ALSB, 0},
+
     {0, "", 0},
+
     {0, "", 0},
+
     {1, STR_NONE, 0},
+
     {0, STR_DISNEY, 0},
+
     {1, STR_SB, 0},
+
     {0, "", 0},
+
     {0, "", 0},
+
     {1, STR_NONE, 0},
+
     {1, STR_ALSB, 0}
 #endif
+
 };
 
 enum { CTL_MOUSEENABLE, CTL_MOUSESENS, CTL_JOYENABLE, CTL_CUSTOMIZE };
