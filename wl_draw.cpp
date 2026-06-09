@@ -1,6 +1,7 @@
 // WL_DRAW.C
 
 #include "wl_def.h"
+#include "chill.h"
 #pragma hdrstop
 
 
@@ -276,6 +277,7 @@ int CalcHeight()
 
 byte *postsource;
 int postx;
+boolean postIsPushableTile;
 
 void ScalePost()
 {
@@ -327,6 +329,8 @@ void ScalePost()
         }
         yendoffs -= vbufPitch;
     }
+
+    Chill_HookWorld(vbuf, vbufPitch, postx, wallheight[postx], postIsPushableTile);
 }
 
 void GlobalScalePost(byte *vidbuf, unsigned pitch)
@@ -347,10 +351,13 @@ void GlobalScalePost(byte *vidbuf, unsigned pitch)
 ====================
 */
 
+
 void HitVertWall (void)
 {
     int wallpic;
     int texture;
+    short hity;
+    boolean currentPushableTile;
 
     texture = ((yintercept+texdelta)>>TEXTUREFROMFIXEDSHIFT)&TEXTUREMASK;
     if (xtilestep == -1)
@@ -359,13 +366,18 @@ void HitVertWall (void)
         xintercept += TILEGLOBAL;
     }
 
-    if(lastside==1 && lastintercept==xtile && lasttilehit==tilehit && !(lasttilehit & 0x40))
+    hity = (short)(yintercept>>TILESHIFT);
+    currentPushableTile = Chill_IsPushableTile(xtile, hity);
+
+    if(lastside==1 && lastintercept==xtile && lasttilehit==tilehit && !(lasttilehit & 0x40)
+        && postIsPushableTile == currentPushableTile)
     {
         if((pixx&3) && texture == lasttexture)
         {
             ScalePost();
             postx = pixx;
             wallheight[pixx] = wallheight[pixx-1];
+            postIsPushableTile = currentPushableTile;
             return;
         }
         ScalePost();
@@ -373,6 +385,7 @@ void HitVertWall (void)
         postsource+=texture-lasttexture;
         postx=pixx;
         lasttexture=texture;
+        postIsPushableTile = currentPushableTile;
         return;
     }
 
@@ -384,10 +397,11 @@ void HitVertWall (void)
     lasttexture=texture;
     wallheight[pixx] = CalcHeight();
     postx = pixx;
+    postIsPushableTile = currentPushableTile;
 
     if (tilehit & 0x40)
     {                                                               // check for adjacent doors
-        ytile = (short)(yintercept>>TILESHIFT);
+        ytile = hity;
         if ( tilemap[xtile-xtilestep][ytile]&0x80 )
             wallpic = DOORWALL+3;
         else
@@ -411,10 +425,13 @@ void HitVertWall (void)
 ====================
 */
 
+
 void HitHorizWall (void)
 {
     int wallpic;
     int texture;
+    short hitx;
+    boolean currentPushableTile;
 
     texture = ((xintercept+texdelta)>>TEXTUREFROMFIXEDSHIFT)&TEXTUREMASK;
     if (ytilestep == -1)
@@ -422,13 +439,18 @@ void HitHorizWall (void)
     else
         texture = TEXTUREMASK-texture;
 
-    if(lastside==0 && lastintercept==ytile && lasttilehit==tilehit && !(lasttilehit & 0x40))
+    hitx = (short)(xintercept>>TILESHIFT);
+    currentPushableTile = Chill_IsPushableTile(hitx, ytile);
+
+    if(lastside==0 && lastintercept==ytile && lasttilehit==tilehit && !(lasttilehit & 0x40)
+        && postIsPushableTile == currentPushableTile)
     {
         if((pixx&3) && texture == lasttexture)
         {
             ScalePost();
             postx=pixx;
             wallheight[pixx] = wallheight[pixx-1];
+            postIsPushableTile = currentPushableTile;
             return;
         }
         ScalePost();
@@ -436,6 +458,7 @@ void HitHorizWall (void)
         postsource+=texture-lasttexture;
         postx=pixx;
         lasttexture=texture;
+        postIsPushableTile = currentPushableTile;
         return;
     }
 
@@ -447,10 +470,11 @@ void HitHorizWall (void)
     lasttexture=texture;
     wallheight[pixx] = CalcHeight();
     postx = pixx;
+    postIsPushableTile = currentPushableTile;
 
     if (tilehit & 0x40)
     {                                                               // check for adjacent doors
-        xtile = (short)(xintercept>>TILESHIFT);
+        xtile = hitx;
         if ( tilemap[xtile][ytile-ytilestep]&0x80)
             wallpic = DOORWALL+2;
         else
@@ -488,6 +512,7 @@ void HitHorizDoor (void)
             ScalePost();
             postx=pixx;
             wallheight[pixx] = wallheight[pixx-1];
+            postIsPushableTile = false;
             return;
         }
         ScalePost();
@@ -495,6 +520,7 @@ void HitHorizDoor (void)
         postsource+=texture-lasttexture;
         postx=pixx;
         lasttexture=texture;
+        postIsPushableTile = false;
         return;
     }
 
@@ -505,6 +531,7 @@ void HitHorizDoor (void)
     lasttexture=texture;
     wallheight[pixx] = CalcHeight();
     postx = pixx;
+    postIsPushableTile = false;
 
     switch(doorobjlist[doornum].lock)
     {
@@ -551,6 +578,7 @@ void HitVertDoor (void)
             ScalePost();
             postx=pixx;
             wallheight[pixx] = wallheight[pixx-1];
+            postIsPushableTile = false;
             return;
         }
         ScalePost();
@@ -558,6 +586,7 @@ void HitVertDoor (void)
         postsource+=texture-lasttexture;
         postx=pixx;
         lasttexture=texture;
+        postIsPushableTile = false;
         return;
     }
 
@@ -568,6 +597,7 @@ void HitVertDoor (void)
     lasttexture=texture;
     wallheight[pixx] = CalcHeight();
     postx = pixx;
+    postIsPushableTile = false;
 
     switch(doorobjlist[doornum].lock)
     {
@@ -1555,6 +1585,8 @@ void    ThreeDRefresh (void)
 
     VL_UnlockSurface(screenBuffer);
     vbuf = NULL;
+
+    Chill_HookOverlay();
 
 //
 // show screen and time last cycle

@@ -17,6 +17,7 @@
 //
 
 #include "wl_def.h"
+#include "chill.h"
 
 /*
 =============================================================================
@@ -354,6 +355,12 @@ static void processEvent(SDL_Event *event)
             {
                 VL_ToggleFullScreen();
                 IN_UpdateGrabAfterFullscreenToggle();
+                IN_ClearKeysDown();
+                return;
+            }
+
+            if(Chill_OnKeyPress(LastScan))
+            {
                 IN_ClearKeysDown();
                 return;
             }
