@@ -25,7 +25,10 @@ const char *HighlightModeStrings[highlightmode_Count] =
 const char *PathfindModeStrings[pathfindmode_Count] =
 {
     "Off",
-    "Closest pushable tile"
+    "Closest pushable tile",
+    "Any%",
+    "Secret exit",
+    "100%"
 };
 
 static longword ChillMessageStartTime = 0;
@@ -287,18 +290,62 @@ static int Chill_GetPositiveModulo(int value, int modulo)
     return result;
 }
 
-static boolean Chill_BuildWorldPath(int pathLength)
+static int Chill_BuildWorldPath(int pathLength)
 {
-    if(pathLength < 2 || pathLength > CHILL_PATH_MAX_DRAW_POINTS)
+    if(pathLength < 2)
     {
-        return false;
+        return 0;
     }
+
+    int drawLength = 0;
+    int lastDx = 0;
+    int lastDy = 0;
 
     for(int i = 0; i < pathLength; i++)
     {
-        ChillPathWorldX[i] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
-        ChillPathWorldY[i] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
-        ChillPathCumulativeDistance[i] = 0;
+        boolean addPoint = false;
+
+        if(i == 0 || i == pathLength - 1)
+        {
+            addPoint = true;
+        }
+        else
+        {
+            int dx = ChillPath[i + 1].tilex - ChillPath[i].tilex;
+            int dy = ChillPath[i + 1].tiley - ChillPath[i].tiley;
+
+            if(i == 1)
+            {
+                lastDx = ChillPath[i].tilex - ChillPath[i - 1].tilex;
+                lastDy = ChillPath[i].tiley - ChillPath[i - 1].tiley;
+            }
+
+            if(dx != lastDx || dy != lastDy)
+            {
+                addPoint = true;
+            }
+
+            lastDx = dx;
+            lastDy = dy;
+        }
+
+        if(addPoint)
+        {
+            if(drawLength >= CHILL_PATH_MAX_DRAW_POINTS)
+            {
+                break;
+            }
+
+            ChillPathWorldX[drawLength] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
+            ChillPathWorldY[drawLength] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
+            ChillPathCumulativeDistance[drawLength] = 0;
+            drawLength++;
+        }
+    }
+
+    if(drawLength < 2)
+    {
+        return 0;
     }
 
     // Make the path feel attached to the player instead of the center of the
@@ -306,14 +353,14 @@ static boolean Chill_BuildWorldPath(int pathLength)
     ChillPathWorldX[0] = player->x;
     ChillPathWorldY[0] = player->y;
 
-    for(int i = 1; i < pathLength; i++)
+    for(int i = 1; i < drawLength; i++)
     {
         fixed dx = ChillPathWorldX[i] - ChillPathWorldX[i - 1];
         fixed dy = ChillPathWorldY[i] - ChillPathWorldY[i - 1];
         ChillPathCumulativeDistance[i] = ChillPathCumulativeDistance[i - 1] + Chill_ApproxDistance(dx, dy);
     }
 
-    return true;
+    return drawLength;
 }
 
 static boolean Chill_ScreenFloorPixelToWorld(int screenx, int screeny, fixed *worldx, fixed *worldy)
@@ -534,13 +581,36 @@ static void Chill_DrawFloorRasterPath(byte *vidbuf, unsigned pitch, int pathLeng
     }
 }
 
-static void Chill_DrawClosestPushablePath(byte *vidbuf, unsigned pitch)
+static boolean Chill_FindPathForCurrentMode(int *pathLength, int *targetX, int *targetY)
+{
+    switch(PathfindMode)
+    {
+        case pathfindmode_ClosestPushableTile:
+            return ChillPathfinder::FindClosestPushableTile(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        case pathfindmode_AnyPercent:
+            return ChillPathfinder::FindStandardExit(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        case pathfindmode_SecretExit:
+            return ChillPathfinder::FindSecretExit(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        case pathfindmode_HundredPercent:
+            return ChillPathfinder::FindHundredPercentPath(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
+static void Chill_DrawCurrentPath(byte *vidbuf, unsigned pitch)
 {
     int pathLength = 0;
     int targetX = -1;
     int targetY = -1;
 
-    if(!ChillPathfinder::FindClosestPushableTile(ChillPath, CHILL_PATHFIND_MAX_PATH, &pathLength, &targetX, &targetY))
+    if(!Chill_FindPathForCurrentMode(&pathLength, &targetX, &targetY))
     {
         return;
     }
@@ -550,17 +620,14 @@ static void Chill_DrawClosestPushablePath(byte *vidbuf, unsigned pitch)
         return;
     }
 
-    if(pathLength > CHILL_PATH_MAX_DRAW_POINTS)
-    {
-        pathLength = CHILL_PATH_MAX_DRAW_POINTS;
-    }
+    int drawPathLength = Chill_BuildWorldPath(pathLength);
 
-    if(!Chill_BuildWorldPath(pathLength))
+    if(drawPathLength < 2)
     {
         return;
     }
 
-    Chill_DrawFloorRasterPath(vidbuf, pitch, pathLength);
+    Chill_DrawFloorRasterPath(vidbuf, pitch, drawPathLength);
 
     (void)targetX;
     (void)targetY;
@@ -578,7 +645,10 @@ void Chill_HookWorld(byte *vidbuf, unsigned pitch)
     switch(PathfindMode)
     {
         case pathfindmode_ClosestPushableTile:
-            Chill_DrawClosestPushablePath(vidbuf, pitch);
+        case pathfindmode_AnyPercent:
+        case pathfindmode_SecretExit:
+        case pathfindmode_HundredPercent:
+            Chill_DrawCurrentPath(vidbuf, pitch);
             break;
 
         default:

@@ -30,10 +30,36 @@ public:
         int *targetTileY
     );
 
+    static boolean FindStandardExit
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
+    static boolean FindSecretExit
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
+    static boolean FindHundredPercentPath
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
     static boolean IsTileTraversable(int tilex, int tiley);
     static boolean IsPushableTile(int tilex, int tiley);
 
-private:
     static boolean IsTileTraversableWithKeys(int tilex, int tiley, int keys);
 };
 

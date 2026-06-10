@@ -68,7 +68,7 @@
 #define CHILL_PATH_ARROW_LENGTH_GLOBAL           (TILEGLOBAL / 2)
 #define CHILL_PATH_ARROW_SPACING_GLOBAL          (TILEGLOBAL + (TILEGLOBAL / 3))
 #define CHILL_PATH_ARROW_SPEED_GLOBAL_PER_TIC    (TILEGLOBAL / 36)
-#define CHILL_PATH_MAX_DRAW_POINTS               128
+#define CHILL_PATH_MAX_DRAW_POINTS               512
 
 typedef enum
 {
@@ -81,6 +81,9 @@ typedef enum
 {
     pathfindmode_Off = 0,
     pathfindmode_ClosestPushableTile,
+    pathfindmode_AnyPercent,
+    pathfindmode_SecretExit,
+    pathfindmode_HundredPercent,
     pathfindmode_Count
 } pathfindmode_t;
 
