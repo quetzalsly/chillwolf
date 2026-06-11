@@ -84,6 +84,9 @@ typedef enum
     pathfindmode_AnyPercent,
     pathfindmode_SecretExit,
     pathfindmode_HundredPercent,
+    pathfindmode_ClosestAmmo,
+    pathfindmode_ClosestAmmoWithEnemies,
+    pathfindmode_ClosestHealth,
     pathfindmode_Count
 } pathfindmode_t;
 

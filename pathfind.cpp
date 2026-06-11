@@ -18,10 +18,14 @@
 #define CHILL_SEARCH_STANDARD_EXIT    1
 #define CHILL_SEARCH_SECRET_EXIT      2
 #define CHILL_SEARCH_OBJECTIVE        3
+#define CHILL_SEARCH_AMMO             4
+#define CHILL_SEARCH_AMMO_WITH_ENEMIES 5
+#define CHILL_SEARCH_HEALTH           6
 
-#define CHILL_OBJECTIVE_ITEM          1
+#define CHILL_OBJECTIVE_TREASURE      1
 #define CHILL_OBJECTIVE_ENEMY         2
-#define CHILL_OBJECTIVE_PUSHABLE      3
+#define CHILL_OBJECTIVE_KEY           3
+#define CHILL_OBJECTIVE_PUSHABLE      4
 
 static const int ChillPathDx[4] = { 0, 1, 0, -1 };
 static const int ChillPathDy[4] = { -1, 0, 1, 0 };
@@ -89,13 +93,17 @@ static int ChillPath_KeyMaskDroppedByActor(objtype *ob)
 
     switch(ob->obclass)
     {
+#ifndef SPEAR
         case bossobj:
         case gretelobj:
+            return 1 << (bo_key1 - bo_key1);
+#else
         case transobj:
         case uberobj:
         case willobj:
         case deathobj:
             return 1 << (bo_key1 - bo_key1);
+#endif
 
         default:
             break;
@@ -104,32 +112,157 @@ static int ChillPath_KeyMaskDroppedByActor(objtype *ob)
     return 0;
 }
 
-static boolean ChillPath_IsCollectableItemNumber(int itemNumber)
+static boolean ChillPath_IsVictoryBossActor(objtype *ob)
+{
+    if(ob == NULL || !(ob->flags & FL_SHOOTABLE))
+    {
+        return false;
+    }
+
+    // Some boss maps, including Episode 2's Schabbs level, do not contain a
+    // normal elevator or EXITTILE. The real game exits via the boss death-cam
+    // sequence, so these bosses must count as standard exits for Any%.
+    switch(ob->obclass)
+    {
+#ifndef SPEAR
+        case schabbobj:
+        case realhitlerobj:
+        case giftobj:
+        case fatobj:
+            return true;
+#else
+        case angelobj:
+            return true;
+#endif
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_ActorDropsAmmo(objtype *ob)
+{
+    if(ob == NULL || !(ob->flags & FL_SHOOTABLE))
+    {
+        return false;
+    }
+
+    // These match KillActor(): guards/officers/mutants drop clips, and SS
+    // drop either a machine gun or a clip depending on current weapon state.
+    switch(ob->obclass)
+    {
+        case guardobj:
+        case officerobj:
+        case mutantobj:
+        case ssobj:
+            return true;
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_IsKeyItemNumber(int itemNumber)
+{
+    return itemNumber >= bo_key1 && itemNumber <= bo_key4;
+}
+
+static boolean ChillPath_IsTreasureItemNumber(int itemNumber)
+{
+    switch(itemNumber)
+    {
+        case bo_cross:
+        case bo_chalice:
+        case bo_bible:
+        case bo_crown:
+            return true;
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_IsAmmoItemNumber(int itemNumber)
+{
+    switch(itemNumber)
+    {
+        case bo_clip:
+        case bo_clip2:
+        case bo_25clip:
+        case bo_machinegun:
+        case bo_chaingun:
+        case bo_fullheal:
+            return true;
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_IsHealthItemNumber(int itemNumber)
 {
     switch(itemNumber)
     {
         case bo_alpo:
         case bo_firstaid:
-        case bo_key1:
-        case bo_key2:
-        case bo_key3:
-        case bo_key4:
-        case bo_cross:
-        case bo_chalice:
-        case bo_bible:
-        case bo_crown:
-        case bo_clip:
-        case bo_clip2:
-        case bo_machinegun:
-        case bo_chaingun:
         case bo_food:
         case bo_fullheal:
-        case bo_25clip:
-        case bo_spear:
+        case bo_gibs:
             return true;
 
         default:
             break;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_IsStatObjectActiveBonus(statobj_t *stat)
+{
+    if(stat == NULL)
+    {
+        return false;
+    }
+
+    if(stat->shapenum == -1)
+    {
+        return false;
+    }
+
+    if(!(stat->flags & FL_BONUS))
+    {
+        return false;
+    }
+
+    return ChillPath_InBounds(stat->tilex, stat->tiley);
+}
+
+static boolean ChillPath_HasStatItemAt(int tilex, int tiley, boolean (*predicate)(int))
+{
+    for(statobj_t *stat = &statobjlist[0]; stat != laststatobj; stat++)
+    {
+        if(!ChillPath_IsStatObjectActiveBonus(stat))
+        {
+            continue;
+        }
+
+        if(stat->tilex != tilex || stat->tiley != tiley)
+        {
+            continue;
+        }
+
+        if(predicate(stat->itemnumber))
+        {
+            return true;
+        }
     }
 
     return false;
@@ -560,6 +693,42 @@ static boolean ChillPath_IsStandardExitTile(int tilex, int tiley)
     return ChillPath_IsStandardElevatorStand(tilex, tiley);
 }
 
+static boolean ChillPath_HasVictoryBossAt(int tilex, int tiley)
+{
+    for(objtype *ob = (objtype *)player->next; ob != NULL; ob = (objtype *)ob->next)
+    {
+        if(!ChillPath_IsVictoryBossActor(ob))
+        {
+            continue;
+        }
+
+        if(ob->tilex == tilex && ob->tiley == tiley)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static boolean ChillPath_HasAmmoDropActorAt(int tilex, int tiley)
+{
+    for(objtype *ob = (objtype *)player->next; ob != NULL; ob = (objtype *)ob->next)
+    {
+        if(!ChillPath_ActorDropsAmmo(ob))
+        {
+            continue;
+        }
+
+        if(ob->tilex == tilex && ob->tiley == tiley)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static int ChillPath_FindObjectiveAt(int tilex, int tiley, int *targetTileX, int *targetTileY)
 {
     for(int i = 0; i < ChillObjectiveCount; i++)
@@ -612,7 +781,7 @@ static boolean ChillPath_SearchTarget
             return ChillPath_IsAdjacentToPushableTile(tilex, tiley, targetTileX, targetTileY);
 
         case CHILL_SEARCH_STANDARD_EXIT:
-            if(ChillPath_IsStandardExitTile(tilex, tiley))
+            if(ChillPath_IsStandardExitTile(tilex, tiley) || ChillPath_HasVictoryBossAt(tilex, tiley))
             {
                 if(targetTileX)
                 {
@@ -630,6 +799,57 @@ static boolean ChillPath_SearchTarget
 
         case CHILL_SEARCH_SECRET_EXIT:
             if(ChillPath_IsSecretElevatorStand(tilex, tiley))
+            {
+                if(targetTileX)
+                {
+                    *targetTileX = tilex;
+                }
+
+                if(targetTileY)
+                {
+                    *targetTileY = tiley;
+                }
+
+                return true;
+            }
+            break;
+
+        case CHILL_SEARCH_AMMO:
+            if(ChillPath_HasStatItemAt(tilex, tiley, ChillPath_IsAmmoItemNumber))
+            {
+                if(targetTileX)
+                {
+                    *targetTileX = tilex;
+                }
+
+                if(targetTileY)
+                {
+                    *targetTileY = tiley;
+                }
+
+                return true;
+            }
+            break;
+
+        case CHILL_SEARCH_AMMO_WITH_ENEMIES:
+            if(ChillPath_HasStatItemAt(tilex, tiley, ChillPath_IsAmmoItemNumber) || ChillPath_HasAmmoDropActorAt(tilex, tiley))
+            {
+                if(targetTileX)
+                {
+                    *targetTileX = tilex;
+                }
+
+                if(targetTileY)
+                {
+                    *targetTileY = tiley;
+                }
+
+                return true;
+            }
+            break;
+
+        case CHILL_SEARCH_HEALTH:
+            if(ChillPath_HasStatItemAt(tilex, tiley, ChillPath_IsHealthItemNumber))
             {
                 if(targetTileX)
                 {
@@ -1039,6 +1259,130 @@ boolean ChillPathfinder::FindSecretExit
     return found;
 }
 
+
+boolean ChillPathfinder::FindClosestAmmo
+(
+    ChillPathPoint *path,
+    int maxPathLength,
+    int *pathLength,
+    int *targetTileX,
+    int *targetTileY
+)
+{
+    if(player == NULL)
+    {
+        return false;
+    }
+
+    memset(ChillSimOpenPushable, 0, sizeof(ChillSimOpenPushable));
+
+    boolean found = ChillPath_RunSearch
+    (
+        player->tilex,
+        player->tiley,
+        gamestate.keys,
+        CHILL_SEARCH_AMMO,
+        path,
+        maxPathLength,
+        pathLength,
+        targetTileX,
+        targetTileY,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    if(found)
+    {
+        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+    }
+
+    return found;
+}
+
+boolean ChillPathfinder::FindClosestAmmoWithEnemies
+(
+    ChillPathPoint *path,
+    int maxPathLength,
+    int *pathLength,
+    int *targetTileX,
+    int *targetTileY
+)
+{
+    if(player == NULL)
+    {
+        return false;
+    }
+
+    memset(ChillSimOpenPushable, 0, sizeof(ChillSimOpenPushable));
+
+    boolean found = ChillPath_RunSearch
+    (
+        player->tilex,
+        player->tiley,
+        gamestate.keys,
+        CHILL_SEARCH_AMMO_WITH_ENEMIES,
+        path,
+        maxPathLength,
+        pathLength,
+        targetTileX,
+        targetTileY,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    if(found)
+    {
+        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+    }
+
+    return found;
+}
+
+boolean ChillPathfinder::FindClosestHealth
+(
+    ChillPathPoint *path,
+    int maxPathLength,
+    int *pathLength,
+    int *targetTileX,
+    int *targetTileY
+)
+{
+    if(player == NULL)
+    {
+        return false;
+    }
+
+    memset(ChillSimOpenPushable, 0, sizeof(ChillSimOpenPushable));
+
+    boolean found = ChillPath_RunSearch
+    (
+        player->tilex,
+        player->tiley,
+        gamestate.keys,
+        CHILL_SEARCH_HEALTH,
+        path,
+        maxPathLength,
+        pathLength,
+        targetTileX,
+        targetTileY,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    if(found)
+    {
+        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+    }
+
+    return found;
+}
+
 static boolean ChillPath_AddObjective(int type, int tilex, int tiley, int pushx, int pushy)
 {
     if(ChillObjectiveCount >= CHILL_PATHFIND_MAX_OBJECTIVES)
@@ -1088,45 +1432,21 @@ static void ChillPath_BuildHundredPercentObjectives(void)
 
     for(statobj_t *stat = &statobjlist[0]; stat != laststatobj; stat++)
     {
-        if(stat->shapenum == -1)
+        if(!ChillPath_IsStatObjectActiveBonus(stat))
         {
             continue;
         }
 
-        if(!(stat->flags & FL_BONUS))
+        if(ChillPath_IsKeyItemNumber(stat->itemnumber))
         {
-            continue;
+            ChillPath_AddObjective(CHILL_OBJECTIVE_KEY, stat->tilex, stat->tiley, stat->tilex, stat->tiley);
         }
-
-        if(!ChillPath_IsCollectableItemNumber(stat->itemnumber))
+        else if(ChillPath_IsTreasureItemNumber(stat->itemnumber))
         {
-            continue;
+            ChillPath_AddObjective(CHILL_OBJECTIVE_TREASURE, stat->tilex, stat->tiley, stat->tilex, stat->tiley);
         }
-
-        ChillPath_AddObjective(CHILL_OBJECTIVE_ITEM, stat->tilex, stat->tiley, stat->tilex, stat->tiley);
     }
 
-    for(int y = 0; y < MAPSIZE; y++)
-    {
-        for(int x = 0; x < MAPSIZE; x++)
-        {
-            if(!ChillPathfinder::IsPushableTile(x, y))
-            {
-                continue;
-            }
-
-            for(int i = 0; i < 4; i++)
-            {
-                int standx = x - ChillPathDx[i];
-                int standy = y - ChillPathDy[i];
-
-                if(ChillPath_CanPushFromTile(x, y, standx, standy))
-                {
-                    ChillPath_AddObjective(CHILL_OBJECTIVE_PUSHABLE, standx, standy, x, y);
-                }
-            }
-        }
-    }
 }
 
 static int ChillPath_ObjectivesLeft(void)
@@ -1168,14 +1488,7 @@ static void ChillPath_MarkObjectivesOnTile(int tilex, int tiley)
 
         if(ChillObjectives[i].tilex == tilex && ChillObjectives[i].tiley == tiley)
         {
-            if(ChillObjectives[i].type == CHILL_OBJECTIVE_PUSHABLE)
-            {
-                ChillPath_CompletePushableObjective(ChillObjectives[i].pushx, ChillObjectives[i].pushy);
-            }
-            else
-            {
-                ChillObjectives[i].complete = true;
-            }
+            ChillObjectives[i].complete = true;
         }
     }
 }

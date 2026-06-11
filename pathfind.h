@@ -48,6 +48,34 @@ public:
         int *targetTileY
     );
 
+
+    static boolean FindClosestAmmo
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
+    static boolean FindClosestAmmoWithEnemies
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
+    static boolean FindClosestHealth
+    (
+        ChillPathPoint *path,
+        int maxPathLength,
+        int *pathLength,
+        int *targetTileX,
+        int *targetTileY
+    );
+
     static boolean FindHundredPercentPath
     (
         ChillPathPoint *path,

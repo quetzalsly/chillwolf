@@ -28,7 +28,10 @@ const char *PathfindModeStrings[pathfindmode_Count] =
     "Closest pushable tile",
     "Any%",
     "Secret exit",
-    "100%"
+    "100%",
+    "Closest ammo",
+    "Closest ammo with enemies",
+    "Closest health"
 };
 
 static longword ChillMessageStartTime = 0;
@@ -597,6 +600,15 @@ static boolean Chill_FindPathForCurrentMode(int *pathLength, int *targetX, int *
         case pathfindmode_HundredPercent:
             return ChillPathfinder::FindHundredPercentPath(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
 
+        case pathfindmode_ClosestAmmo:
+            return ChillPathfinder::FindClosestAmmo(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        case pathfindmode_ClosestAmmoWithEnemies:
+            return ChillPathfinder::FindClosestAmmoWithEnemies(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
+        case pathfindmode_ClosestHealth:
+            return ChillPathfinder::FindClosestHealth(ChillPath, CHILL_PATHFIND_MAX_PATH, pathLength, targetX, targetY);
+
         default:
             break;
     }
@@ -648,6 +660,9 @@ void Chill_HookWorld(byte *vidbuf, unsigned pitch)
         case pathfindmode_AnyPercent:
         case pathfindmode_SecretExit:
         case pathfindmode_HundredPercent:
+        case pathfindmode_ClosestAmmo:
+        case pathfindmode_ClosestAmmoWithEnemies:
+        case pathfindmode_ClosestHealth:
             Chill_DrawCurrentPath(vidbuf, pitch);
             break;
 
