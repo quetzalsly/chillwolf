@@ -1424,6 +1424,54 @@ static boolean ChillPath_RunSearch
     return ChillPath_CopySearchPath(foundIndex, path, maxPathLength, pathLength, foundTargetTileX, foundTargetTileY);
 }
 
+
+static boolean ChillPath_FindFallbackPushableAction
+(
+    ChillPathPoint *path,
+    int maxPathLength,
+    int *pathLength,
+    int *targetTileX,
+    int *targetTileY,
+    int startKeys
+)
+{
+    if(player == NULL)
+    {
+        return false;
+    }
+
+    // If the requested objective is not currently reachable, the next useful
+    // world interaction may still be a pushwall. This happens on maps where
+    // the player begins in a room whose only exit is a pushable wall, or where
+    // the route first requires opening a secret wall before any real objective
+    // becomes reachable. We deliberately use the closest-pushable search here
+    // because it only succeeds from a tile that can activate the wall using the
+    // same side/direction rule as PushWall().
+    boolean found = ChillPath_RunSearch
+    (
+        player->tilex,
+        player->tiley,
+        startKeys,
+        CHILL_SEARCH_CLOSEST_PUSHABLE,
+        path,
+        maxPathLength,
+        pathLength,
+        targetTileX,
+        targetTileY,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    if(found)
+    {
+        ChillPath_TrimPathToFirstAction(path, pathLength, startKeys, targetTileX, targetTileY);
+    }
+
+    return found;
+}
+
 boolean ChillPathfinder::FindClosestPushableTile
 (
     ChillPathPoint *path,
@@ -1505,9 +1553,10 @@ boolean ChillPathfinder::FindStandardExit
     if(found)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        return true;
     }
 
-    return found;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
 }
 
 boolean ChillPathfinder::FindSecretExit
@@ -1546,9 +1595,10 @@ boolean ChillPathfinder::FindSecretExit
     if(found)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        return true;
     }
 
-    return found;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
 }
 
 
@@ -1588,9 +1638,10 @@ boolean ChillPathfinder::FindClosestAmmo
     if(found)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        return true;
     }
 
-    return found;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
 }
 
 boolean ChillPathfinder::FindClosestAmmoWithEnemies
@@ -1629,9 +1680,10 @@ boolean ChillPathfinder::FindClosestAmmoWithEnemies
     if(found)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        return true;
     }
 
-    return found;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
 }
 
 boolean ChillPathfinder::FindClosestHealth
@@ -1670,9 +1722,10 @@ boolean ChillPathfinder::FindClosestHealth
     if(found)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        return true;
     }
 
-    return found;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
 }
 
 static boolean ChillPath_AddObjective(int type, int tilex, int tiley, int pushx, int pushy)
@@ -1880,9 +1933,10 @@ boolean ChillPathfinder::FindHundredPercentPath
         if(foundObjective)
         {
             ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
+            return true;
         }
 
-        return foundObjective;
+        return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, currentKeys);
     }
 
     boolean foundExit = ChillPath_RunSearch
@@ -1925,8 +1979,9 @@ boolean ChillPathfinder::FindHundredPercentPath
     if(foundExit)
     {
         ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
+        return true;
     }
 
-    return foundExit;
+    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, currentKeys);
 }
 
