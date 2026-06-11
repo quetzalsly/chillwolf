@@ -88,6 +88,10 @@ public:
     static boolean IsTileTraversable(int tilex, int tiley);
     static boolean IsPushableTile(int tilex, int tiley);
 
+    static boolean IsVerifiedStandardExitTile(int tilex, int tiley);
+    static boolean IsVerifiedSecretExitTile(int tilex, int tiley);
+    static boolean IsVerifiedVictoryExitTile(int tilex, int tiley);
+
     static boolean IsTileTraversableWithKeys(int tilex, int tiley, int keys);
 };
 

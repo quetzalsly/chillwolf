@@ -16,6 +16,7 @@
 
 #define CHILL_HIGHLIGHT_MODE_KEY                 SDLK_COMMA
 #define CHILL_PATHFIND_MODE_KEY                  SDLK_PERIOD
+#define CHILL_PATH_DEBUG_KEY                      SDLK_l
 
 //===========================================================================
 // Chill overlay text
@@ -28,6 +29,11 @@
 #define CHILL_TEXT_G                             255
 #define CHILL_TEXT_B                             255
 #define CHILL_TEXT_ALPHA                         255
+
+#define CHILL_DEBUG_TEXT_X                        4
+#define CHILL_DEBUG_TEXT_Y                        14
+#define CHILL_DEBUG_TEXT_LINE_HEIGHT              9
+#define CHILL_DEBUG_TEXT_ALPHA                    255
 
 //===========================================================================
 // Pushable tile highlight
@@ -92,6 +98,7 @@ typedef enum
 
 extern highlightmode_t HighlightMode;
 extern pathfindmode_t PathfindMode;
+extern boolean ChillPathDebugEnabled;
 
 extern const char *HighlightModeStrings[highlightmode_Count];
 extern const char *PathfindModeStrings[pathfindmode_Count];

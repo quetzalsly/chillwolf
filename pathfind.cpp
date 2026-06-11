@@ -40,6 +40,7 @@ static byte ChillSimOpenPushable[MAPSIZE][MAPSIZE];
 static ChillPathPoint ChillReversePath[CHILL_PATHFIND_MAX_PATH];
 
 static boolean ChillPath_CanPushFromTile(int pushTileX, int pushTileY, int standTileX, int standTileY);
+static int ChillPath_DirectionFromTileToTile(int fromTileX, int fromTileY, int toTileX, int toTileY);
 
 typedef struct
 {
@@ -274,7 +275,11 @@ static void ChillPath_BuildKeyPickupTable(void)
 
     for(statobj_t *stat = &statobjlist[0]; stat != laststatobj; stat++)
     {
-        if(stat->shapenum == -1)
+        // Only real active bonus sprites can grant keys. Decorative statics
+        // such as ceiling lights do not have meaningful itemnumber values;
+        // treating them as pickups creates phantom keys and can make Any%
+        // stop on ordinary floor tiles.
+        if(!ChillPath_IsStatObjectActiveBonus(stat))
         {
             continue;
         }
@@ -433,6 +438,82 @@ static boolean ChillPath_CanMoveThroughDoorEdge(int doorIndex, int fromTileX, in
     return fromTileX == door->tilex && toTileX == door->tilex;
 }
 
+static boolean ChillPath_TileHasBlockingActorOrWall(int tilex, int tiley)
+{
+    if(!ChillPath_InBounds(tilex, tiley))
+    {
+        return true;
+    }
+
+    return actorat[tilex][tiley] ? true : false;
+}
+
+static boolean ChillPath_CanMoveOutOfPushedWallTile(int fromTileX, int fromTileY, int toTileX, int toTileY)
+{
+    if(!ChillPathfinder::IsPushableTile(fromTileX, fromTileY))
+    {
+        return true;
+    }
+
+    int moveDirection = ChillPath_DirectionFromTileToTile(fromTileX, fromTileY, toTileX, toTileY);
+
+    if(moveDirection < 0)
+    {
+        return false;
+    }
+
+    int standTileX = fromTileX - ChillPathDx[moveDirection];
+    int standTileY = fromTileY - ChillPathDy[moveDirection];
+
+    // Moving in the same direction as the push enters the first tile behind
+    // the pushwall. That only becomes walkable if the wall can complete its
+    // second block of movement. If the second block is blocked, the wall stops
+    // in the first tile behind the original pushwall.
+    if(ChillPath_CanPushFromTile(fromTileX, fromTileY, standTileX, standTileY))
+    {
+        int finalTileX = fromTileX + ChillPathDx[moveDirection] * 2;
+        int finalTileY = fromTileY + ChillPathDy[moveDirection] * 2;
+
+        if(ChillPath_TileHasBlockingActorOrWall(finalTileX, finalTileY))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static boolean ChillPath_IsBlockedByPushedWallFinalPosition(int fromTileX, int fromTileY, int toTileX, int toTileY)
+{
+    int moveDirection = ChillPath_DirectionFromTileToTile(fromTileX, fromTileY, toTileX, toTileY);
+
+    if(moveDirection < 0)
+    {
+        return false;
+    }
+
+    int pushTileX = fromTileX - ChillPathDx[moveDirection];
+    int pushTileY = fromTileY - ChillPathDy[moveDirection];
+    int standTileX = pushTileX - ChillPathDx[moveDirection];
+    int standTileY = pushTileY - ChillPathDy[moveDirection];
+
+    if(!ChillPath_CanPushFromTile(pushTileX, pushTileY, standTileX, standTileY))
+    {
+        return false;
+    }
+
+    // If the final tile was originally clear, the pushwall eventually occupies
+    // this tile after moving two blocks. The route may use the original wall
+    // tile and the first tile behind it, but it cannot keep walking straight
+    // through the final resting place of the wall.
+    if(!ChillPath_TileHasBlockingActorOrWall(toTileX, toTileY))
+    {
+        return true;
+    }
+
+    return false;
+}
+
 static boolean ChillPath_CanMoveBetweenTiles(int fromTileX, int fromTileY, int toTileX, int toTileY, int keys, int searchMode)
 {
     if(!ChillPath_InBounds(fromTileX, fromTileY) || !ChillPath_InBounds(toTileX, toTileY))
@@ -448,6 +529,16 @@ static boolean ChillPath_CanMoveBetweenTiles(int fromTileX, int fromTileY, int t
         }
 
         return ChillPath_CanPushFromTile(toTileX, toTileY, fromTileX, fromTileY);
+    }
+
+    if(ChillPath_IsBlockedByPushedWallFinalPosition(fromTileX, fromTileY, toTileX, toTileY))
+    {
+        return false;
+    }
+
+    if(!ChillPath_CanMoveOutOfPushedWallTile(fromTileX, fromTileY, toTileX, toTileY))
+    {
+        return false;
     }
 
     if(!ChillPathfinder::IsTileTraversableWithKeys(toTileX, toTileY, keys))
@@ -523,6 +614,10 @@ boolean ChillPathfinder::IsTileTraversableWithKeys(int tilex, int tiley, int key
         return false;
     }
 
+    // Bit 0x40 is also used by the engine as a door-side marker on otherwise
+    // empty floor. Real solid wall tile 64 is already rejected above because
+    // actorat still contains a non-pointer wall marker there; an empty
+    // door-side floor tile with value 64 must remain traversable.
     byte baseTile = tile & ~0x40;
 
     if(baseTile == 0)
@@ -623,74 +718,212 @@ static boolean ChillPath_IsAdjacentToPushableTile(int tilex, int tiley, int *tar
     return false;
 }
 
-static boolean ChillPath_IsSecretElevatorStand(int tilex, int tiley)
+static boolean ChillPath_IsElevatorSwitchTile(int tilex, int tiley)
 {
     if(!ChillPath_InBounds(tilex, tiley) || mapsegs[0] == NULL)
     {
         return false;
     }
 
-    if(*(mapsegs[0] + (tiley << mapshift) + tilex) != ALTELEVATORTILE)
+    if(tilemap[tilex][tiley] != ELEVATORTILE)
     {
         return false;
     }
 
-    if(ChillPath_InBounds(tilex + 1, tiley) && tilemap[tilex + 1][tiley] == ELEVATORTILE)
+    // Avoid false exits from unrelated wall tiles that happen to have the same
+    // texture number as the elevator switch. The original use code checks
+    // tilemap only, but for pathfinding we must identify the real elevator
+    // cluster from the loaded map data.
+    return *(mapsegs[0] + (tiley << mapshift) + tilex) == ELEVATORTILE;
+}
+
+static boolean ChillPath_IsElevatorDoorIndex(int doorIndex)
+{
+    if(doorIndex < 0 || doorIndex >= doornum)
     {
-        return true;
+        return false;
     }
 
-    if(ChillPath_InBounds(tilex - 1, tiley) && tilemap[tilex - 1][tiley] == ELEVATORTILE)
+    return doorobjlist[doorIndex].lock == dr_elevator;
+}
+
+static boolean ChillPath_IsElevatorDoorAt(int tilex, int tiley)
+{
+    int doorIndex = ChillPath_DoorIndexAt(tilex, tiley);
+    return ChillPath_IsElevatorDoorIndex(doorIndex);
+}
+
+static boolean ChillPath_IsElevatorSwitchTileOnSide(int standTileX, int standTileY, int switchTileX, int switchTileY)
+{
+    if(!ChillPath_IsElevatorSwitchTile(switchTileX, switchTileY))
     {
-        return true;
+        return false;
+    }
+
+    // Cmd_Use only accepts elevator switches when the player faces east/west.
+    // Therefore the switch must be directly west or east of the stand tile.
+    return switchTileY == standTileY && (switchTileX == standTileX - 1 || switchTileX == standTileX + 1);
+}
+
+static boolean ChillPath_IsStandForElevatorDoor(int tilex, int tiley)
+{
+    // Do not infer an elevator from a random floor tile near an elevator door.
+    // A valid elevator stand must be geometrically tied to a real dr_elevator
+    // door and to the switch wall the player can press with Cmd_Use().
+    for(int i = 0; i < doornum; i++)
+    {
+        if(!ChillPath_IsElevatorDoorIndex(i))
+        {
+            continue;
+        }
+
+        doorobj_t *door = &doorobjlist[i];
+
+        if(door->vertical)
+        {
+            // Vertical doors are crossed east/west. The elevator switch cluster
+            // is on the chamber side, one tile beyond the stand tile.
+            if(tiley != door->tiley)
+            {
+                continue;
+            }
+
+            if(tilex == door->tilex - 1)
+            {
+                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex - 1, tiley))
+                {
+                    return true;
+                }
+            }
+            else if(tilex == door->tilex + 1)
+            {
+                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex + 1, tiley))
+                {
+                    return true;
+                }
+            }
+        }
+        else
+        {
+            // Horizontal elevator doors are rarer, but the use rule is still
+            // east/west, so a valid stand beside the door must have a real
+            // elevator switch immediately west or east of it.
+            if(tilex != door->tilex)
+            {
+                continue;
+            }
+
+            if(tiley == door->tiley - 1 || tiley == door->tiley + 1)
+            {
+                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex - 1, tiley)
+                    || ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex + 1, tiley))
+                {
+                    return true;
+                }
+            }
+        }
     }
 
     return false;
 }
 
-static boolean ChillPath_IsStandardElevatorStand(int tilex, int tiley)
+static boolean ChillPath_IsVerifiedElevatorStandWithKeys(int tilex, int tiley, int keys, boolean secretExit)
 {
     if(!ChillPath_InBounds(tilex, tiley) || mapsegs[0] == NULL)
     {
         return false;
     }
 
-    if(*(mapsegs[0] + (tiley << mapshift) + tilex) == ALTELEVATORTILE)
+    int offset = (tiley << mapshift) + tilex;
+    int standTile = *(mapsegs[0] + offset);
+
+    // Secret elevators are identified by the tile the player stands on, not by
+    // a different switch. Any% must exclude those ALTELEVATORTILE stands.
+    if(secretExit)
+    {
+        if(standTile != ALTELEVATORTILE)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if(standTile == ALTELEVATORTILE)
+        {
+            return false;
+        }
+    }
+
+    // The search only checks tiles it has reached, but this keeps the public
+    // debug helpers honest and makes the rule explicit for locked/closed door
+    // edge cases.
+    if(!ChillPathfinder::IsTileTraversableWithKeys(tilex, tiley, keys))
     {
         return false;
     }
 
-    if(ChillPath_InBounds(tilex + 1, tiley) && tilemap[tilex + 1][tiley] == ELEVATORTILE)
+    if(!ChillPath_IsStandForElevatorDoor(tilex, tiley))
     {
-        return true;
+        return false;
     }
 
-    if(ChillPath_InBounds(tilex - 1, tiley) && tilemap[tilex - 1][tiley] == ELEVATORTILE)
-    {
-        return true;
-    }
-
-    return false;
+    return true;
 }
 
-static boolean ChillPath_IsVictoryExitTile(int tilex, int tiley)
+static boolean ChillPath_IsSecretElevatorStandWithKeys(int tilex, int tiley, int keys)
+{
+    return ChillPath_IsVerifiedElevatorStandWithKeys(tilex, tiley, keys, true);
+}
+
+static boolean ChillPath_IsStandardElevatorStandWithKeys(int tilex, int tiley, int keys)
+{
+    return ChillPath_IsVerifiedElevatorStandWithKeys(tilex, tiley, keys, false);
+}
+
+static boolean ChillPath_IsVictoryExitTileWithKeys(int tilex, int tiley, int keys)
 {
     if(!ChillPath_InBounds(tilex, tiley) || mapsegs[1] == NULL)
     {
         return false;
     }
 
-    return *(mapsegs[1] + (tiley << mapshift) + tilex) == EXITTILE;
+    if(*(mapsegs[1] + (tiley << mapshift) + tilex) != EXITTILE)
+    {
+        return false;
+    }
+
+    // Victory exits are crossed by walking onto the tile.
+    return ChillPathfinder::IsTileTraversableWithKeys(tilex, tiley, keys);
 }
 
-static boolean ChillPath_IsStandardExitTile(int tilex, int tiley)
+static boolean ChillPath_IsStandardExitTileWithKeys(int tilex, int tiley, int keys)
 {
-    if(ChillPath_IsVictoryExitTile(tilex, tiley))
+    if(ChillPath_IsVictoryExitTileWithKeys(tilex, tiley, keys))
     {
         return true;
     }
 
-    return ChillPath_IsStandardElevatorStand(tilex, tiley);
+    return ChillPath_IsStandardElevatorStandWithKeys(tilex, tiley, keys);
+}
+
+static boolean ChillPath_IsSecretExitTileWithKeys(int tilex, int tiley, int keys)
+{
+    return ChillPath_IsSecretElevatorStandWithKeys(tilex, tiley, keys);
+}
+
+boolean ChillPathfinder::IsVerifiedStandardExitTile(int tilex, int tiley)
+{
+    return ChillPath_IsStandardExitTileWithKeys(tilex, tiley, gamestate.keys & (CHILL_PATHFIND_KEY_STATES - 1));
+}
+
+boolean ChillPathfinder::IsVerifiedSecretExitTile(int tilex, int tiley)
+{
+    return ChillPath_IsSecretExitTileWithKeys(tilex, tiley, gamestate.keys & (CHILL_PATHFIND_KEY_STATES - 1));
+}
+
+boolean ChillPathfinder::IsVerifiedVictoryExitTile(int tilex, int tiley)
+{
+    return ChillPath_IsVictoryExitTileWithKeys(tilex, tiley, gamestate.keys & (CHILL_PATHFIND_KEY_STATES - 1));
 }
 
 static boolean ChillPath_HasVictoryBossAt(int tilex, int tiley)
@@ -781,7 +1014,7 @@ static boolean ChillPath_SearchTarget
             return ChillPath_IsAdjacentToPushableTile(tilex, tiley, targetTileX, targetTileY);
 
         case CHILL_SEARCH_STANDARD_EXIT:
-            if(ChillPath_IsStandardExitTile(tilex, tiley) || ChillPath_HasVictoryBossAt(tilex, tiley))
+            if(ChillPath_IsStandardExitTileWithKeys(tilex, tiley, keys) || ChillPath_HasVictoryBossAt(tilex, tiley))
             {
                 if(targetTileX)
                 {
@@ -798,7 +1031,7 @@ static boolean ChillPath_SearchTarget
             break;
 
         case CHILL_SEARCH_SECRET_EXIT:
-            if(ChillPath_IsSecretElevatorStand(tilex, tiley))
+            if(ChillPath_IsSecretExitTileWithKeys(tilex, tiley, keys))
             {
                 if(targetTileX)
                 {
@@ -948,7 +1181,7 @@ static boolean ChillPath_CopySearchPath
     return outputLength > 1;
 }
 
-static boolean ChillPath_TrimPathToFirstNewKey
+static boolean ChillPath_TrimPathToFirstAction
 (
     ChillPathPoint *path,
     int *pathLength,
@@ -966,6 +1199,54 @@ static boolean ChillPath_TrimPathToFirstNewKey
 
     for(int i = 0; i < *pathLength; i++)
     {
+        // The planner is allowed to use doors and pushwalls as part of a future
+        // route, but the visible guide must not draw through an unopened
+        // wall-like obstruction. Stop the current leg at the tile where the
+        // player can stand and press use. After the obstruction opens, the
+        // next frame will recalculate a fresh route through the new space.
+        if(i > 0)
+        {
+            int actionTileX = path[i].tilex;
+            int actionTileY = path[i].tiley;
+            boolean stopAtAction = false;
+
+            if(ChillPathfinder::IsPushableTile(actionTileX, actionTileY))
+            {
+                stopAtAction = true;
+            }
+            else
+            {
+                int doorIndex = ChillPath_DoorIndexAt(actionTileX, actionTileY);
+
+                if(doorIndex >= 0)
+                {
+                    doorobj_t *door = &doorobjlist[doorIndex];
+
+                    if(door->action != dr_open && door->action != dr_opening && doorposition[doorIndex] != 0xffff)
+                    {
+                        stopAtAction = true;
+                    }
+                }
+            }
+
+            if(stopAtAction)
+            {
+                *pathLength = i;
+
+                if(targetTileX)
+                {
+                    *targetTileX = actionTileX;
+                }
+
+                if(targetTileY)
+                {
+                    *targetTileY = actionTileY;
+                }
+
+                return true;
+            }
+        }
+
         int nextKeys = ChillPath_KeysAfterEnteringTile(path[i].tilex, path[i].tiley, keys);
 
         if((nextKeys & ~keys) != 0)
@@ -1159,7 +1440,7 @@ boolean ChillPathfinder::FindClosestPushableTile
 
     memset(ChillSimOpenPushable, 0, sizeof(ChillSimOpenPushable));
 
-    return ChillPath_RunSearch
+    boolean found = ChillPath_RunSearch
     (
         player->tilex,
         player->tiley,
@@ -1175,6 +1456,17 @@ boolean ChillPathfinder::FindClosestPushableTile
         NULL,
         NULL
     );
+
+    if(found)
+    {
+        // The closest-pushable search target is the wall tile itself, but the
+        // player can only stand beside it and press use. Do not draw the floor
+        // trail into the still-solid pushwall tile, because that looks like the
+        // route goes straight through a wall.
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+    }
+
+    return found;
 }
 
 boolean ChillPathfinder::FindStandardExit
@@ -1212,7 +1504,7 @@ boolean ChillPathfinder::FindStandardExit
 
     if(found)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
     }
 
     return found;
@@ -1253,7 +1545,7 @@ boolean ChillPathfinder::FindSecretExit
 
     if(found)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
     }
 
     return found;
@@ -1295,7 +1587,7 @@ boolean ChillPathfinder::FindClosestAmmo
 
     if(found)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
     }
 
     return found;
@@ -1336,7 +1628,7 @@ boolean ChillPathfinder::FindClosestAmmoWithEnemies
 
     if(found)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
     }
 
     return found;
@@ -1377,7 +1669,7 @@ boolean ChillPathfinder::FindClosestHealth
 
     if(found)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, gamestate.keys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
     }
 
     return found;
@@ -1587,7 +1879,7 @@ boolean ChillPathfinder::FindHundredPercentPath
 
         if(foundObjective)
         {
-            ChillPath_TrimPathToFirstNewKey(path, pathLength, currentKeys, targetTileX, targetTileY);
+            ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
         }
 
         return foundObjective;
@@ -1632,7 +1924,7 @@ boolean ChillPathfinder::FindHundredPercentPath
 
     if(foundExit)
     {
-        ChillPath_TrimPathToFirstNewKey(path, pathLength, currentKeys, targetTileX, targetTileY);
+        ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
     }
 
     return foundExit;

@@ -15,6 +15,7 @@
 
 highlightmode_t HighlightMode = highlightmode_Off;
 pathfindmode_t PathfindMode = pathfindmode_Off;
+boolean ChillPathDebugEnabled = false;
 
 const char *HighlightModeStrings[highlightmode_Count] =
 {
@@ -196,6 +197,11 @@ static void Chill_ShowModeMessage(const char *prefix, const char *modeName)
     ChillMessageStartTime = GetTimeCount();
 }
 
+static const char *Chill_GetDebugToggleString(void)
+{
+    return ChillPathDebugEnabled ? "On" : "Off";
+}
+
 boolean Chill_OnKeyPress(int key)
 {
     if(!Chill_IsInGameLevel())
@@ -214,6 +220,13 @@ boolean Chill_OnKeyPress(int key)
     {
         PathfindMode = (pathfindmode_t)((PathfindMode + 1) % pathfindmode_Count);
         Chill_ShowModeMessage("Pathfind mode", PathfindModeStrings[PathfindMode]);
+        return true;
+    }
+
+    if(key == CHILL_PATH_DEBUG_KEY)
+    {
+        ChillPathDebugEnabled = !ChillPathDebugEnabled;
+        Chill_ShowModeMessage("Path debug", Chill_GetDebugToggleString());
         return true;
     }
 
@@ -301,49 +314,18 @@ static int Chill_BuildWorldPath(int pathLength)
     }
 
     int drawLength = 0;
-    int lastDx = 0;
-    int lastDy = 0;
 
-    for(int i = 0; i < pathLength; i++)
+    // Keep every grid step instead of reducing the path to only corner points.
+    // The renderer draws world-space line segments between these points; when
+    // the path was simplified, a long straight visual segment could cut across
+    // a solid wall even though the grid route itself walked around it. Using
+    // every tile center makes the drawn trail follow the exact BFS route.
+    for(int i = 0; i < pathLength && drawLength < CHILL_PATH_MAX_DRAW_POINTS; i++)
     {
-        boolean addPoint = false;
-
-        if(i == 0 || i == pathLength - 1)
-        {
-            addPoint = true;
-        }
-        else
-        {
-            int dx = ChillPath[i + 1].tilex - ChillPath[i].tilex;
-            int dy = ChillPath[i + 1].tiley - ChillPath[i].tiley;
-
-            if(i == 1)
-            {
-                lastDx = ChillPath[i].tilex - ChillPath[i - 1].tilex;
-                lastDy = ChillPath[i].tiley - ChillPath[i - 1].tiley;
-            }
-
-            if(dx != lastDx || dy != lastDy)
-            {
-                addPoint = true;
-            }
-
-            lastDx = dx;
-            lastDy = dy;
-        }
-
-        if(addPoint)
-        {
-            if(drawLength >= CHILL_PATH_MAX_DRAW_POINTS)
-            {
-                break;
-            }
-
-            ChillPathWorldX[drawLength] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
-            ChillPathWorldY[drawLength] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
-            ChillPathCumulativeDistance[drawLength] = 0;
-            drawLength++;
-        }
+        ChillPathWorldX[drawLength] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
+        ChillPathWorldY[drawLength] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
+        ChillPathCumulativeDistance[drawLength] = 0;
+        drawLength++;
     }
 
     if(drawLength < 2)
@@ -404,7 +386,22 @@ static boolean Chill_IsWorldFloorVisible(fixed worldx, fixed worldy)
         return false;
     }
 
-    return spotvis[tilex][tiley] ? true : false;
+    if(!spotvis[tilex][tiley])
+    {
+        return false;
+    }
+
+    // spotvis is also set for visible wall-hit tiles. The path trail is a
+    // floor overlay, so do not paint path pixels inside solid wall tiles just
+    // because the raycaster saw that wall. This fixes paths/arrows appearing
+    // to cut directly through a wall on maps with visible wall cells along the
+    // route projection.
+    if(!ChillPathfinder::IsTileTraversableWithKeys(tilex, tiley, gamestate.keys))
+    {
+        return false;
+    }
+
+    return true;
 }
 
 static int Chill_EvaluatePathPixel(fixed worldx, fixed worldy, int pathLength, int animationPhase)
@@ -748,12 +745,194 @@ static void Chill_DrawFadeText(const char *text, int x, int y, int alpha)
     VL_UnlockSurface(screenBuffer);
 }
 
+
+static const char *Chill_GetGoalDescription(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return "None";
+    }
+
+    if(ChillPathfinder::IsPushableTile(tilex, tiley))
+    {
+        return "Push wall";
+    }
+
+    if(ChillPathfinder::IsVerifiedSecretExitTile(tilex, tiley))
+    {
+        return "Secret elevator";
+    }
+
+    if(ChillPathfinder::IsVerifiedStandardExitTile(tilex, tiley))
+    {
+        if(ChillPathfinder::IsVerifiedVictoryExitTile(tilex, tiley))
+        {
+            return "Victory exit";
+        }
+
+        return "Standard elevator";
+    }
+
+    if(tilemap[tilex][tiley] == ELEVATORTILE)
+    {
+        return "Elevator wall";
+    }
+
+    if(tilemap[tilex][tiley] & 0x80)
+    {
+        return "Door";
+    }
+
+    for(statobj_t *stat = &statobjlist[0]; stat != laststatobj; stat++)
+    {
+        if(stat->shapenum == -1 || !(stat->flags & FL_BONUS))
+        {
+            continue;
+        }
+
+        if(stat->tilex != tilex || stat->tiley != tiley)
+        {
+            continue;
+        }
+
+        switch(stat->itemnumber)
+        {
+            case bo_key1:
+                return "Gold key";
+
+            case bo_key2:
+                return "Silver key";
+
+            case bo_key3:
+                return "Key 3";
+
+            case bo_key4:
+                return "Key 4";
+
+            case bo_clip:
+            case bo_clip2:
+            case bo_25clip:
+                return "Ammo";
+
+            case bo_machinegun:
+            case bo_chaingun:
+                return "Gun";
+
+            case bo_alpo:
+            case bo_firstaid:
+            case bo_food:
+            case bo_fullheal:
+            case bo_gibs:
+                return "Health";
+
+            case bo_cross:
+            case bo_chalice:
+            case bo_bible:
+            case bo_crown:
+                return "Treasure";
+
+            default:
+                return "Bonus";
+        }
+    }
+
+    for(objtype *ob = (objtype *)player->next; ob != NULL; ob = (objtype *)ob->next)
+    {
+        if(!(ob->flags & FL_SHOOTABLE))
+        {
+            continue;
+        }
+
+        if(ob->tilex == tilex && ob->tiley == tiley)
+        {
+            return "Enemy";
+        }
+    }
+
+    return "Tile";
+}
+
+static void Chill_DrawDebugOverlay(void)
+{
+    if(!ChillPathDebugEnabled)
+    {
+        return;
+    }
+
+    int pathLength = 0;
+    int targetX = -1;
+    int targetY = -1;
+    boolean hasPath = Chill_FindPathForCurrentMode(&pathLength, &targetX, &targetY);
+    int pathEndX = -1;
+    int pathEndY = -1;
+
+    if(hasPath && pathLength > 0)
+    {
+        pathEndX = ChillPath[pathLength - 1].tilex;
+        pathEndY = ChillPath[pathLength - 1].tiley;
+    }
+
+    char line[96];
+    int y = CHILL_DEBUG_TEXT_Y;
+
+    snprintf(line, sizeof(line), "Debug: %s", Chill_GetDebugToggleString());
+    Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+    y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+    snprintf(line, sizeof(line), "Mode: %s", PathfindModeStrings[PathfindMode]);
+    Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+    y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+    snprintf(line, sizeof(line), "Player tile: %d,%d", player->tilex, player->tiley);
+    Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+    y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+    if(hasPath)
+    {
+        snprintf(line, sizeof(line), "Goal tile: %d,%d", targetX, targetY);
+        Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+        y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+        snprintf(line, sizeof(line), "Goal type: %s", Chill_GetGoalDescription(targetX, targetY));
+        Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+        y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+        snprintf(line, sizeof(line), "Path end: %d,%d len:%d", pathEndX, pathEndY, pathLength);
+        Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+        y += CHILL_DEBUG_TEXT_LINE_HEIGHT;
+
+        if(targetX >= 0 && targetY >= 0 && targetX < MAPSIZE && targetY < MAPSIZE && mapsegs[0] != NULL && mapsegs[1] != NULL)
+        {
+            int offset = (targetY << mapshift) + targetX;
+
+            snprintf
+            (
+                line,
+                sizeof(line),
+                "Raw m0:%d m1:%d t:%d a:%d",
+                *(mapsegs[0] + offset),
+                *(mapsegs[1] + offset),
+                tilemap[targetX][targetY],
+                actorat[targetX][targetY] ? 1 : 0
+            );
+
+            Chill_DrawFadeText(line, CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+        }
+    }
+    else
+    {
+        Chill_DrawFadeText("Goal tile: none", CHILL_DEBUG_TEXT_X, y, CHILL_DEBUG_TEXT_ALPHA);
+    }
+}
+
 void Chill_HookOverlay(void)
 {
     if(!Chill_IsInGameLevel())
     {
         return;
     }
+
+    Chill_DrawDebugOverlay();
 
     longword now = GetTimeCount();
     longword elapsed = now - ChillMessageStartTime;
