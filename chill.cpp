@@ -52,6 +52,8 @@ static fixed ChillPathWorldX[CHILL_PATH_MAX_DRAW_POINTS];
 static fixed ChillPathWorldY[CHILL_PATH_MAX_DRAW_POINTS];
 static int ChillPathCumulativeDistance[CHILL_PATH_MAX_DRAW_POINTS];
 
+static void Chill_WriteDebugDump(void);
+
 static boolean Chill_IsInGameLevel(void)
 {
     return ingame && playstate == ex_stillplaying && player != NULL && !gamestate.victoryflag;
@@ -226,6 +228,7 @@ boolean Chill_OnKeyPress(int key)
     if(key == CHILL_PATH_DEBUG_KEY)
     {
         ChillPathDebugEnabled = !ChillPathDebugEnabled;
+        Chill_WriteDebugDump();
         Chill_ShowModeMessage("Path debug", Chill_GetDebugToggleString());
         return true;
     }
@@ -320,7 +323,20 @@ static int Chill_BuildWorldPath(int pathLength)
     // the path was simplified, a long straight visual segment could cut across
     // a solid wall even though the grid route itself walked around it. Using
     // every tile center makes the drawn trail follow the exact BFS route.
-    for(int i = 0; i < pathLength && drawLength < CHILL_PATH_MAX_DRAW_POINTS; i++)
+    int visiblePathLength = pathLength;
+    int maxVisiblePoints = CHILL_PATH_VISIBLE_TILE_LIMIT + 1;
+
+    if(maxVisiblePoints < 2)
+    {
+        maxVisiblePoints = 2;
+    }
+
+    if(visiblePathLength > maxVisiblePoints)
+    {
+        visiblePathLength = maxVisiblePoints;
+    }
+
+    for(int i = 0; i < visiblePathLength && drawLength < CHILL_PATH_MAX_DRAW_POINTS; i++)
     {
         ChillPathWorldX[drawLength] = ((fixed)ChillPath[i].tilex << TILESHIFT) + (TILEGLOBAL >> 1);
         ChillPathWorldY[drawLength] = ((fixed)ChillPath[i].tiley << TILESHIFT) + (TILEGLOBAL >> 1);
@@ -850,6 +866,605 @@ static const char *Chill_GetGoalDescription(int tilex, int tiley)
     }
 
     return "Tile";
+}
+
+
+static void Chill_JsonString(FILE *file, const char *text)
+{
+    fputc('"', file);
+
+    if(text != NULL)
+    {
+        while(*text)
+        {
+            unsigned char ch = (unsigned char)*text++;
+
+            switch(ch)
+            {
+                case '"':
+                    fputs("\\\"", file);
+                    break;
+
+                case '\\':
+                    fputs("\\\\", file);
+                    break;
+
+                case '\b':
+                    fputs("\\b", file);
+                    break;
+
+                case '\f':
+                    fputs("\\f", file);
+                    break;
+
+                case '\n':
+                    fputs("\\n", file);
+                    break;
+
+                case '\r':
+                    fputs("\\r", file);
+                    break;
+
+                case '\t':
+                    fputs("\\t", file);
+                    break;
+
+                default:
+                    if(ch < 32)
+                    {
+                        fprintf(file, "\\u%04x", ch);
+                    }
+                    else
+                    {
+                        fputc(ch, file);
+                    }
+                    break;
+            }
+        }
+    }
+
+    fputc('"', file);
+}
+
+static int Chill_Map0At(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE || mapsegs[0] == NULL)
+    {
+        return -1;
+    }
+
+    return *(mapsegs[0] + (tiley << mapshift) + tilex);
+}
+
+static int Chill_Map1At(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE || mapsegs[1] == NULL)
+    {
+        return -1;
+    }
+
+    return *(mapsegs[1] + (tiley << mapshift) + tilex);
+}
+
+static int Chill_TileMapAt(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return -1;
+    }
+
+    return tilemap[tilex][tiley];
+}
+
+static int Chill_ActorKindAt(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return -1;
+    }
+
+    objtype *actor = actorat[tilex][tiley];
+
+    if(actor == NULL)
+    {
+        return 0;
+    }
+
+    if(ISPOINTER(actor))
+    {
+        return 1;
+    }
+
+    return 2;
+}
+
+static int Chill_ActorClassAt(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return -1;
+    }
+
+    objtype *actor = actorat[tilex][tiley];
+
+    if(actor != NULL && ISPOINTER(actor))
+    {
+        return actor->obclass;
+    }
+
+    return -1;
+}
+
+static int Chill_ActorRawAt(int tilex, int tiley)
+{
+    if(tilex < 0 || tiley < 0 || tilex >= MAPSIZE || tiley >= MAPSIZE)
+    {
+        return 0;
+    }
+
+    objtype *actor = actorat[tilex][tiley];
+
+    if(actor == NULL || ISPOINTER(actor))
+    {
+        return 0;
+    }
+
+    return (int)(uintptr_t)actor;
+}
+
+static void Chill_DumpTileJson(FILE *file, int tilex, int tiley)
+{
+    fprintf
+    (
+        file,
+        "{\"x\":%d,\"y\":%d,\"m0\":%d,\"m1\":%d,\"t\":%d,\"actorKind\":%d,\"actorClass\":%d,\"actorRaw\":%d,\"trav\":%d,\"push\":%d,\"stdExit\":%d,\"secExit\":%d,\"victoryExit\":%d}",
+        tilex,
+        tiley,
+        Chill_Map0At(tilex, tiley),
+        Chill_Map1At(tilex, tiley),
+        Chill_TileMapAt(tilex, tiley),
+        Chill_ActorKindAt(tilex, tiley),
+        Chill_ActorClassAt(tilex, tiley),
+        Chill_ActorRawAt(tilex, tiley),
+        ChillPathfinder::IsTileTraversable(tilex, tiley) ? 1 : 0,
+        ChillPathfinder::IsPushableTile(tilex, tiley) ? 1 : 0,
+        ChillPathfinder::IsVerifiedStandardExitTile(tilex, tiley) ? 1 : 0,
+        ChillPathfinder::IsVerifiedSecretExitTile(tilex, tiley) ? 1 : 0,
+        ChillPathfinder::IsVerifiedVictoryExitTile(tilex, tiley) ? 1 : 0
+    );
+}
+
+static void Chill_DumpTileWindowJson(FILE *file, const char *name, int centerX, int centerY, int radius)
+{
+    fprintf(file, ",\"");
+    fputs(name, file);
+    fprintf(file, "\":[");
+
+    boolean first = true;
+
+    for(int y = centerY - radius; y <= centerY + radius; y++)
+    {
+        for(int x = centerX - radius; x <= centerX + radius; x++)
+        {
+            if(x < 0 || y < 0 || x >= MAPSIZE || y >= MAPSIZE)
+            {
+                continue;
+            }
+
+            if(!first)
+            {
+                fputc(',', file);
+            }
+
+            first = false;
+            Chill_DumpTileJson(file, x, y);
+        }
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpAllPushablesJson(FILE *file)
+{
+    fputs(",\"pushables\":[", file);
+
+    boolean first = true;
+
+    for(int y = 0; y < MAPSIZE; y++)
+    {
+        for(int x = 0; x < MAPSIZE; x++)
+        {
+            if(Chill_Map1At(x, y) != PUSHABLETILE)
+            {
+                continue;
+            }
+
+            if(!first)
+            {
+                fputc(',', file);
+            }
+
+            first = false;
+            Chill_DumpTileJson(file, x, y);
+        }
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpRawExitMarkersJson(FILE *file)
+{
+    fputs(",\"rawExitMarkers\":[", file);
+
+    boolean first = true;
+
+    for(int y = 0; y < MAPSIZE; y++)
+    {
+        for(int x = 0; x < MAPSIZE; x++)
+        {
+            int m0 = Chill_Map0At(x, y);
+            int m1 = Chill_Map1At(x, y);
+            int t = Chill_TileMapAt(x, y);
+
+            if(m0 != ELEVATORTILE && t != ELEVATORTILE && m0 != ALTELEVATORTILE && m1 != EXITTILE)
+            {
+                continue;
+            }
+
+            if(!first)
+            {
+                fputc(',', file);
+            }
+
+            first = false;
+            Chill_DumpTileJson(file, x, y);
+        }
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpDoorsJson(FILE *file)
+{
+    fputs(",\"doors\":[", file);
+
+    for(int i = 0; i < doornum; i++)
+    {
+        doorobj_t *door = &doorobjlist[i];
+
+        if(i > 0)
+        {
+            fputc(',', file);
+        }
+
+        fprintf
+        (
+            file,
+            "{\"i\":%d,\"x\":%d,\"y\":%d,\"vertical\":%d,\"lock\":%d,\"action\":%d,\"tic\":%d,\"position\":%u}",
+            i,
+            door->tilex,
+            door->tiley,
+            door->vertical ? 1 : 0,
+            door->lock,
+            door->action,
+            door->ticcount,
+            doorposition[i]
+        );
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpStaticsJson(FILE *file)
+{
+    fputs(",\"statics\":[", file);
+
+    boolean first = true;
+
+    for(statobj_t *stat = &statobjlist[0]; stat != laststatobj; stat++)
+    {
+        if(stat->shapenum == -1)
+        {
+            continue;
+        }
+
+        if(!first)
+        {
+            fputc(',', file);
+        }
+
+        first = false;
+        fprintf
+        (
+            file,
+            "{\"x\":%d,\"y\":%d,\"shape\":%d,\"flags\":%u,\"item\":%d,\"bonus\":%d}",
+            stat->tilex,
+            stat->tiley,
+            stat->shapenum,
+            (unsigned)stat->flags,
+            stat->itemnumber,
+            (stat->flags & FL_BONUS) ? 1 : 0
+        );
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpActorsJson(FILE *file)
+{
+    fputs(",\"actors\":[", file);
+
+    boolean first = true;
+
+    for(objtype *ob = (player != NULL) ? (objtype *)player->next : NULL; ob != NULL; ob = (objtype *)ob->next)
+    {
+        if(!first)
+        {
+            fputc(',', file);
+        }
+
+        first = false;
+        fprintf
+        (
+            file,
+            "{\"x\":%d,\"y\":%d,\"class\":%d,\"flags\":%u,\"hp\":%d,\"active\":%d,\"hidden\":%d,\"shootable\":%d}",
+            ob->tilex,
+            ob->tiley,
+            ob->obclass,
+            (unsigned)ob->flags,
+            ob->hitpoints,
+            ob->active,
+            ob->hidden,
+            (ob->flags & FL_SHOOTABLE) ? 1 : 0
+        );
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpPathJson(FILE *file, int pathLength)
+{
+    fputs(",\"path\":[", file);
+
+    for(int i = 0; i < pathLength; i++)
+    {
+        if(i > 0)
+        {
+            fputc(',', file);
+        }
+
+        fprintf(file, "[%d,%d]", ChillPath[i].tilex, ChillPath[i].tiley);
+    }
+
+    fputc(']', file);
+}
+
+
+static void Chill_DumpFullMapIntArray(FILE *file, const char *name, int kind)
+{
+    fprintf(file, ",\"%s\":[", name);
+
+    boolean first = true;
+
+    for(int y = 0; y < MAPSIZE; y++)
+    {
+        for(int x = 0; x < MAPSIZE; x++)
+        {
+            if(!first)
+            {
+                fputc(',', file);
+            }
+
+            first = false;
+
+            switch(kind)
+            {
+                case 0:
+                    fprintf(file, "%d", Chill_Map0At(x, y));
+                    break;
+
+                case 1:
+                    fprintf(file, "%d", Chill_Map1At(x, y));
+                    break;
+
+                case 2:
+                    fprintf(file, "%d", Chill_TileMapAt(x, y));
+                    break;
+
+                case 3:
+                    fprintf(file, "%d", Chill_ActorKindAt(x, y));
+                    break;
+
+                case 4:
+                    fprintf(file, "%d", Chill_ActorClassAt(x, y));
+                    break;
+
+                case 5:
+                    fprintf(file, "%d", Chill_ActorRawAt(x, y));
+                    break;
+
+                case 6:
+                    fprintf(file, "%d", ChillPathfinder::IsTileTraversable(x, y) ? 1 : 0);
+                    break;
+
+                case 7:
+                    fprintf(file, "%d", ChillPathfinder::IsPushableTile(x, y) ? 1 : 0);
+                    break;
+
+                case 8:
+                    fprintf(file, "%d", ChillPathfinder::IsVerifiedStandardExitTile(x, y) ? 1 : 0);
+                    break;
+
+                case 9:
+                    fprintf(file, "%d", ChillPathfinder::IsVerifiedSecretExitTile(x, y) ? 1 : 0);
+                    break;
+
+                case 10:
+                    fprintf(file, "%d", ChillPathfinder::IsVerifiedVictoryExitTile(x, y) ? 1 : 0);
+                    break;
+
+                case 11:
+                    fprintf(file, "%d", spotvis[x][y]);
+                    break;
+
+                default:
+                    fputc('0', file);
+                    break;
+            }
+        }
+    }
+
+    fputc(']', file);
+}
+
+static void Chill_DumpFullMapJson(FILE *file)
+{
+    fprintf(file, ",\"fullMap\":{\"w\":%d,\"h\":%d,\"mapshift\":%d", MAPSIZE, MAPSIZE, mapshift);
+
+    Chill_DumpFullMapIntArray(file, "plane0", 0);
+    Chill_DumpFullMapIntArray(file, "plane1", 1);
+    Chill_DumpFullMapIntArray(file, "tilemap", 2);
+    Chill_DumpFullMapIntArray(file, "actorKind", 3);
+    Chill_DumpFullMapIntArray(file, "actorClass", 4);
+    Chill_DumpFullMapIntArray(file, "actorRaw", 5);
+    Chill_DumpFullMapIntArray(file, "traversable", 6);
+    Chill_DumpFullMapIntArray(file, "pushable", 7);
+    Chill_DumpFullMapIntArray(file, "standardExit", 8);
+    Chill_DumpFullMapIntArray(file, "secretExit", 9);
+    Chill_DumpFullMapIntArray(file, "victoryExit", 10);
+    Chill_DumpFullMapIntArray(file, "spotvis", 11);
+
+    fputc('}', file);
+}
+
+
+static void Chill_WriteDebugDump(void)
+{
+    FILE *file = fopen(CHILL_PATH_DEBUG_DUMP_FILE, "wb");
+
+    if(file == NULL)
+    {
+        return;
+    }
+
+    int pathLength = 0;
+    int targetX = -1;
+    int targetY = -1;
+    boolean hasPath = Chill_FindPathForCurrentMode(&pathLength, &targetX, &targetY);
+    int pathEndX = -1;
+    int pathEndY = -1;
+
+    if(hasPath && pathLength > 0)
+    {
+        pathEndX = ChillPath[pathLength - 1].tilex;
+        pathEndY = ChillPath[pathLength - 1].tiley;
+    }
+
+    fputs("{\"schema\":1", file);
+    fputs(",\"build\":\"chill-path-debug\"", file);
+
+    fprintf
+    (
+        file,
+        ",\"modes\":{\"highlight\":%d,\"highlightName\":",
+        HighlightMode
+    );
+    Chill_JsonString(file, HighlightModeStrings[HighlightMode]);
+    fprintf(file, ",\"pathfind\":%d,\"pathfindName\":", PathfindMode);
+    Chill_JsonString(file, PathfindModeStrings[PathfindMode]);
+    fprintf(file, ",\"debug\":%d}", ChillPathDebugEnabled ? 1 : 0);
+
+    fprintf
+    (
+        file,
+        ",\"game\":{\"ingame\":%d,\"playstate\":%d,\"victory\":%d,\"episode\":%d,\"mapon\":%d,\"difficulty\":%d,\"keys\":%d,\"health\":%d,\"ammo\":%d,\"weapon\":%d,\"bestweapon\":%d,\"secret\":%d,\"secretTotal\":%d,\"treasure\":%d,\"treasureTotal\":%d,\"kills\":%d,\"killTotal\":%d,\"time\":%d}",
+        ingame ? 1 : 0,
+        playstate,
+        gamestate.victoryflag ? 1 : 0,
+        gamestate.episode,
+        gamestate.mapon,
+        gamestate.difficulty,
+        gamestate.keys,
+        gamestate.health,
+        gamestate.ammo,
+        gamestate.weapon,
+        gamestate.bestweapon,
+        gamestate.secretcount,
+        gamestate.secrettotal,
+        gamestate.treasurecount,
+        gamestate.treasuretotal,
+        gamestate.killcount,
+        gamestate.killtotal,
+        gamestate.TimeCount
+    );
+
+    if(player != NULL)
+    {
+        fprintf
+        (
+            file,
+            ",\"player\":{\"tilex\":%d,\"tiley\":%d,\"x\":%d,\"y\":%d,\"angle\":%d,\"area\":%d}",
+            player->tilex,
+            player->tiley,
+            player->x,
+            player->y,
+            player->angle,
+            player->areanumber
+        );
+    }
+    else
+    {
+        fputs(",\"player\":null", file);
+    }
+
+    fprintf
+    (
+        file,
+        ",\"pushwall\":{\"state\":%u,\"pos\":%u,\"x\":%u,\"y\":%u,\"dir\":%u,\"tile\":%u}",
+        pwallstate,
+        pwallpos,
+        pwallx,
+        pwally,
+        pwalldir,
+        pwalltile
+    );
+
+    fprintf
+    (
+        file,
+        ",\"currentRoute\":{\"hasPath\":%d,\"pathLength\":%d,\"targetX\":%d,\"targetY\":%d,\"targetType\":",
+        hasPath ? 1 : 0,
+        pathLength,
+        targetX,
+        targetY
+    );
+    Chill_JsonString(file, Chill_GetGoalDescription(targetX, targetY));
+    fprintf(file, ",\"pathEndX\":%d,\"pathEndY\":%d}", pathEndX, pathEndY);
+
+    if(player != NULL)
+    {
+        fputs(",\"playerTile\":", file);
+        Chill_DumpTileJson(file, player->tilex, player->tiley);
+        Chill_DumpTileWindowJson(file, "playerWindow", player->tilex, player->tiley, 6);
+    }
+
+    if(targetX >= 0 && targetY >= 0)
+    {
+        fputs(",\"targetTile\":", file);
+        Chill_DumpTileJson(file, targetX, targetY);
+        Chill_DumpTileWindowJson(file, "targetWindow", targetX, targetY, 6);
+    }
+
+    Chill_DumpPathJson(file, pathLength);
+    Chill_DumpFullMapJson(file);
+    Chill_DumpAllPushablesJson(file);
+    Chill_DumpRawExitMarkersJson(file);
+    Chill_DumpDoorsJson(file);
+    Chill_DumpStaticsJson(file);
+    Chill_DumpActorsJson(file);
+
+    fputs("}\n", file);
+    fclose(file);
 }
 
 static void Chill_DrawDebugOverlay(void)

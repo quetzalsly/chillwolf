@@ -13,6 +13,10 @@
 #define CHILL_PATHFIND_KEY_STATES (1 << CHILL_PATHFIND_KEY_COUNT)
 #define CHILL_PATHFIND_STATE_COUNT (MAPSIZE * MAPSIZE * CHILL_PATHFIND_KEY_STATES)
 #define CHILL_PATHFIND_MAX_OBJECTIVES (MAPSIZE * MAPSIZE)
+#define CHILL_PATHFIND_MAX_PUSHWALLS 12
+#define CHILL_PATHFIND_PUSH_STATE_BASE 9
+#define CHILL_PATHFIND_MAX_SEARCH_NODES 131072
+#define CHILL_PATHFIND_VISITED_HASH_SIZE 262144
 
 #define CHILL_SEARCH_CLOSEST_PUSHABLE 0
 #define CHILL_SEARCH_STANDARD_EXIT    1
@@ -41,6 +45,10 @@ static ChillPathPoint ChillReversePath[CHILL_PATHFIND_MAX_PATH];
 
 static boolean ChillPath_CanPushFromTile(int pushTileX, int pushTileY, int standTileX, int standTileY);
 static int ChillPath_DirectionFromTileToTile(int fromTileX, int fromTileY, int toTileX, int toTileY);
+static boolean ChillPath_IsAdjacentToPushableTileWithState(int tilex, int tiley, unsigned long long pushState, int *targetTileX, int *targetTileY);
+static boolean ChillPath_IsStandardExitTileWithKeysAndState(int tilex, int tiley, int keys, unsigned long long pushState);
+static boolean ChillPath_IsSecretExitTileWithKeysAndState(int tilex, int tiley, int keys, unsigned long long pushState);
+static boolean ChillPath_TryPushWallState(int standTileX, int standTileY, int pushTileX, int pushTileY, unsigned long long pushState, unsigned long long *newPushState);
 
 typedef struct
 {
@@ -54,6 +62,26 @@ typedef struct
 
 static ChillObjective ChillObjectives[CHILL_PATHFIND_MAX_OBJECTIVES];
 static int ChillObjectiveCount;
+
+typedef struct
+{
+    short tilex;
+    short tiley;
+    byte keys;
+    unsigned long long pushState;
+    int parent;
+} ChillSearchNode;
+
+static ChillSearchNode ChillSearchNodes[CHILL_PATHFIND_MAX_SEARCH_NODES];
+static int ChillSearchQueue[CHILL_PATHFIND_MAX_SEARCH_NODES];
+static unsigned long long ChillVisitedHashKeys[CHILL_PATHFIND_VISITED_HASH_SIZE];
+static int ChillVisitedHashNodes[CHILL_PATHFIND_VISITED_HASH_SIZE];
+static byte ChillVisitedHashUsed[CHILL_PATHFIND_VISITED_HASH_SIZE];
+
+static short ChillPushWallX[CHILL_PATHFIND_MAX_PUSHWALLS];
+static short ChillPushWallY[CHILL_PATHFIND_MAX_PUSHWALLS];
+static unsigned long long ChillPushWallStatePower[CHILL_PATHFIND_MAX_PUSHWALLS];
+static int ChillPushWallCount;
 
 static boolean ChillPath_InBounds(int tilex, int tiley)
 {
@@ -130,6 +158,14 @@ static boolean ChillPath_IsVictoryBossActor(objtype *ob)
         case realhitlerobj:
         case giftobj:
         case fatobj:
+            return true;
+
+        case mechahitlerobj:
+            // Episode 3's final map starts with Mecha-Hitler. Killing this
+            // actor does not immediately set ex_victorious; it runs
+            // A_HitlerMorph(), spawning realhitlerobj on the same tile. For
+            // Any% this is still the required first boss interaction, because
+            // there is no elevator/victory tile on the level.
             return true;
 #else
         case angelobj:
@@ -765,66 +801,15 @@ static boolean ChillPath_IsElevatorSwitchTileOnSide(int standTileX, int standTil
     return switchTileY == standTileY && (switchTileX == standTileX - 1 || switchTileX == standTileX + 1);
 }
 
-static boolean ChillPath_IsStandForElevatorDoor(int tilex, int tiley)
+static boolean ChillPath_HasUsableElevatorSwitchBeside(int tilex, int tiley)
 {
-    // Do not infer an elevator from a random floor tile near an elevator door.
-    // A valid elevator stand must be geometrically tied to a real dr_elevator
-    // door and to the switch wall the player can press with Cmd_Use().
-    for(int i = 0; i < doornum; i++)
-    {
-        if(!ChillPath_IsElevatorDoorIndex(i))
-        {
-            continue;
-        }
-
-        doorobj_t *door = &doorobjlist[i];
-
-        if(door->vertical)
-        {
-            // Vertical doors are crossed east/west. The elevator switch cluster
-            // is on the chamber side, one tile beyond the stand tile.
-            if(tiley != door->tiley)
-            {
-                continue;
-            }
-
-            if(tilex == door->tilex - 1)
-            {
-                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex - 1, tiley))
-                {
-                    return true;
-                }
-            }
-            else if(tilex == door->tilex + 1)
-            {
-                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex + 1, tiley))
-                {
-                    return true;
-                }
-            }
-        }
-        else
-        {
-            // Horizontal elevator doors are rarer, but the use rule is still
-            // east/west, so a valid stand beside the door must have a real
-            // elevator switch immediately west or east of it.
-            if(tilex != door->tilex)
-            {
-                continue;
-            }
-
-            if(tiley == door->tiley - 1 || tiley == door->tiley + 1)
-            {
-                if(ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex - 1, tiley)
-                    || ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex + 1, tiley))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
+    // Mirror Cmd_Use(): a level elevator is activated by using an
+    // ELEVATORTILE directly east or west of the player's current tile.
+    // Do not require the player to stand directly beside the elevator door;
+    // several Wolf3D maps have a small elevator chamber where the usable
+    // switch is a tile or two away from the dr_elevator door.
+    return ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex - 1, tiley)
+        || ChillPath_IsElevatorSwitchTileOnSide(tilex, tiley, tilex + 1, tiley);
 }
 
 static boolean ChillPath_IsVerifiedElevatorStandWithKeys(int tilex, int tiley, int keys, boolean secretExit)
@@ -862,7 +847,7 @@ static boolean ChillPath_IsVerifiedElevatorStandWithKeys(int tilex, int tiley, i
         return false;
     }
 
-    if(!ChillPath_IsStandForElevatorDoor(tilex, tiley))
+    if(!ChillPath_HasUsableElevatorSwitchBeside(tilex, tiley))
     {
         return false;
     }
@@ -996,12 +981,12 @@ static boolean ChillPath_SearchTarget
     int tilex,
     int tiley,
     int keys,
+    unsigned long long pushState,
     int *targetTileX,
     int *targetTileY,
     int *objectiveIndex
 )
 {
-    (void)keys;
 
     if(objectiveIndex)
     {
@@ -1011,10 +996,10 @@ static boolean ChillPath_SearchTarget
     switch(searchMode)
     {
         case CHILL_SEARCH_CLOSEST_PUSHABLE:
-            return ChillPath_IsAdjacentToPushableTile(tilex, tiley, targetTileX, targetTileY);
+            return ChillPath_IsAdjacentToPushableTileWithState(tilex, tiley, pushState, targetTileX, targetTileY);
 
         case CHILL_SEARCH_STANDARD_EXIT:
-            if(ChillPath_IsStandardExitTileWithKeys(tilex, tiley, keys) || ChillPath_HasVictoryBossAt(tilex, tiley))
+            if(ChillPath_IsStandardExitTileWithKeysAndState(tilex, tiley, keys, pushState) || ChillPath_HasVictoryBossAt(tilex, tiley))
             {
                 if(targetTileX)
                 {
@@ -1031,7 +1016,7 @@ static boolean ChillPath_SearchTarget
             break;
 
         case CHILL_SEARCH_SECRET_EXIT:
-            if(ChillPath_IsSecretExitTileWithKeys(tilex, tiley, keys))
+            if(ChillPath_IsSecretExitTileWithKeysAndState(tilex, tiley, keys, pushState))
             {
                 if(targetTileX)
                 {
@@ -1118,9 +1103,532 @@ static boolean ChillPath_SearchTarget
     return false;
 }
 
-static boolean ChillPath_CopySearchPath
+static void ChillPath_BuildPushWallStateTable(void)
+{
+    ChillPushWallCount = 0;
+    unsigned long long power = 1;
+
+    for(int y = 0; y < MAPSIZE; y++)
+    {
+        for(int x = 0; x < MAPSIZE; x++)
+        {
+            if(!ChillPathfinder::IsPushableTile(x, y))
+            {
+                continue;
+            }
+
+            if(tilemap[x][y] == 0)
+            {
+                continue;
+            }
+
+            if(ChillPushWallCount >= CHILL_PATHFIND_MAX_PUSHWALLS)
+            {
+                continue;
+            }
+
+            ChillPushWallX[ChillPushWallCount] = (short)x;
+            ChillPushWallY[ChillPushWallCount] = (short)y;
+            ChillPushWallStatePower[ChillPushWallCount] = power;
+            ChillPushWallCount++;
+            power *= CHILL_PATHFIND_PUSH_STATE_BASE;
+        }
+    }
+}
+
+static int ChillPath_PushWallIndexAt(int tilex, int tiley)
+{
+    for(int i = 0; i < ChillPushWallCount; i++)
+    {
+        if(ChillPushWallX[i] == tilex && ChillPushWallY[i] == tiley)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int ChillPath_GetPushWallStateDigit(unsigned long long pushState, int pushWallIndex)
+{
+    if(pushWallIndex < 0 || pushWallIndex >= ChillPushWallCount)
+    {
+        return 0;
+    }
+
+    return (int)((pushState / ChillPushWallStatePower[pushWallIndex]) % CHILL_PATHFIND_PUSH_STATE_BASE);
+}
+
+static unsigned long long ChillPath_SetPushWallStateDigit(unsigned long long pushState, int pushWallIndex, int digit)
+{
+    int oldDigit = ChillPath_GetPushWallStateDigit(pushState, pushWallIndex);
+
+    return pushState + ((unsigned long long)(digit - oldDigit) * ChillPushWallStatePower[pushWallIndex]);
+}
+
+static boolean ChillPath_DecodePushedWall(int pushWallIndex, unsigned long long pushState, int *originX, int *originY, int *finalX, int *finalY)
+{
+    int digit = ChillPath_GetPushWallStateDigit(pushState, pushWallIndex);
+
+    if(digit <= 0)
+    {
+        return false;
+    }
+
+    int direction = (digit - 1) & 3;
+    int distance = (digit >= 5) ? 2 : 1;
+
+    int x = ChillPushWallX[pushWallIndex];
+    int y = ChillPushWallY[pushWallIndex];
+
+    if(originX)
+    {
+        *originX = x;
+    }
+
+    if(originY)
+    {
+        *originY = y;
+    }
+
+    if(finalX)
+    {
+        *finalX = x + ChillPathDx[direction] * distance;
+    }
+
+    if(finalY)
+    {
+        *finalY = y + ChillPathDy[direction] * distance;
+    }
+
+    return true;
+}
+
+static boolean ChillPath_IsOpenedPushWallOrigin(int tilex, int tiley, unsigned long long pushState)
+{
+    int index = ChillPath_PushWallIndexAt(tilex, tiley);
+
+    if(index < 0)
+    {
+        return false;
+    }
+
+    return ChillPath_GetPushWallStateDigit(pushState, index) > 0;
+}
+
+static boolean ChillPath_IsPushedWallFinalTile(int tilex, int tiley, unsigned long long pushState)
+{
+    for(int i = 0; i < ChillPushWallCount; i++)
+    {
+        int finalX;
+        int finalY;
+
+        if(!ChillPath_DecodePushedWall(i, pushState, NULL, NULL, &finalX, &finalY))
+        {
+            continue;
+        }
+
+        if(finalX == tilex && finalY == tiley)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static boolean ChillPath_ActorAtWithPushState(int tilex, int tiley, unsigned long long pushState)
+{
+    if(!ChillPath_InBounds(tilex, tiley))
+    {
+        return true;
+    }
+
+    if(ChillPath_IsPushedWallFinalTile(tilex, tiley, pushState))
+    {
+        return true;
+    }
+
+    if(ChillPath_IsOpenedPushWallOrigin(tilex, tiley, pushState))
+    {
+        return false;
+    }
+
+    return actorat[tilex][tiley] ? true : false;
+}
+
+static boolean ChillPath_BlockingStaticAtWithPushState(int tilex, int tiley, unsigned long long pushState)
+{
+    if(ChillPath_IsOpenedPushWallOrigin(tilex, tiley, pushState))
+    {
+        return false;
+    }
+
+    if(ChillPath_IsPushedWallFinalTile(tilex, tiley, pushState))
+    {
+        return true;
+    }
+
+    objtype *actor = actorat[tilex][tiley];
+
+    if(actor == NULL)
+    {
+        return false;
+    }
+
+    if(ISPOINTER(actor))
+    {
+        // Dynamic actors move; do not let a guard temporarily erase the route.
+        return false;
+    }
+
+    if(ChillPathfinder::IsPushableTile(tilex, tiley) || ChillPath_IsActivePushwallTile(tilex, tiley))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static boolean ChillPath_IsTileTraversableWithKeysAndPushState(int tilex, int tiley, int keys, unsigned long long pushState)
+{
+    if(!ChillPath_InBounds(tilex, tiley))
+    {
+        return false;
+    }
+
+    if(ChillPath_IsPushedWallFinalTile(tilex, tiley, pushState))
+    {
+        return false;
+    }
+
+    if(ChillPathfinder::IsPushableTile(tilex, tiley))
+    {
+        return ChillPath_IsOpenedPushWallOrigin(tilex, tiley, pushState);
+    }
+
+    byte tile = tilemap[tilex][tiley];
+
+    if(tile & 0x80)
+    {
+        return ChillPath_CanPassDoor(tile & 0x7f, keys);
+    }
+
+    if(ChillPath_IsActivePushwallTile(tilex, tiley))
+    {
+        return false;
+    }
+
+    if(ChillPath_BlockingStaticAtWithPushState(tilex, tiley, pushState))
+    {
+        return false;
+    }
+
+    byte baseTile = tile & ~0x40;
+
+    if(baseTile == 0)
+    {
+        return true;
+    }
+
+    if(baseTile >= AREATILE)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+static boolean ChillPath_IsVerifiedElevatorStandWithKeysAndState(int tilex, int tiley, int keys, boolean secretExit, unsigned long long pushState)
+{
+    if(!ChillPath_InBounds(tilex, tiley) || mapsegs[0] == NULL)
+    {
+        return false;
+    }
+
+    int offset = (tiley << mapshift) + tilex;
+    int standTile = *(mapsegs[0] + offset);
+
+    if(secretExit)
+    {
+        if(standTile != ALTELEVATORTILE)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if(standTile == ALTELEVATORTILE)
+        {
+            return false;
+        }
+    }
+
+    if(!ChillPath_IsTileTraversableWithKeysAndPushState(tilex, tiley, keys, pushState))
+    {
+        return false;
+    }
+
+    if(!ChillPath_HasUsableElevatorSwitchBeside(tilex, tiley))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static boolean ChillPath_IsStandardExitTileWithKeysAndState(int tilex, int tiley, int keys, unsigned long long pushState)
+{
+    if(ChillPath_IsVictoryExitTileWithKeys(tilex, tiley, keys))
+    {
+        return true;
+    }
+
+    return ChillPath_IsVerifiedElevatorStandWithKeysAndState(tilex, tiley, keys, false, pushState);
+}
+
+static boolean ChillPath_IsSecretExitTileWithKeysAndState(int tilex, int tiley, int keys, unsigned long long pushState)
+{
+    return ChillPath_IsVerifiedElevatorStandWithKeysAndState(tilex, tiley, keys, true, pushState);
+}
+
+static boolean ChillPath_IsAdjacentToPushableTileWithState(int tilex, int tiley, unsigned long long pushState, int *targetTileX, int *targetTileY)
+{
+    for(int i = 0; i < 4; i++)
+    {
+        int checkx = tilex + ChillPathDx[i];
+        int checky = tiley + ChillPathDy[i];
+        int pushWallIndex = ChillPath_PushWallIndexAt(checkx, checky);
+
+        if(pushWallIndex < 0 || ChillPath_GetPushWallStateDigit(pushState, pushWallIndex) != 0)
+        {
+            continue;
+        }
+
+        if(ChillPath_TryPushWallState(tilex, tiley, checkx, checky, pushState, NULL))
+        {
+            if(targetTileX)
+            {
+                *targetTileX = checkx;
+            }
+
+            if(targetTileY)
+            {
+                *targetTileY = checky;
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static unsigned int ChillPath_HashSearchKey(unsigned long long key)
+{
+    key ^= key >> 33;
+    key *= 0xff51afd7ed558ccdULL;
+    key ^= key >> 33;
+    key *= 0xc4ceb9fe1a85ec53ULL;
+    key ^= key >> 33;
+
+    return (unsigned int)key & (CHILL_PATHFIND_VISITED_HASH_SIZE - 1);
+}
+
+static unsigned long long ChillPath_MakeSearchKey(int tilex, int tiley, int keys, unsigned long long pushState)
+{
+    unsigned long long key = pushState;
+
+    key = key * CHILL_PATHFIND_KEY_STATES + (unsigned long long)(keys & (CHILL_PATHFIND_KEY_STATES - 1));
+    key = key * MAPSIZE + (unsigned long long)tilex;
+    key = key * MAPSIZE + (unsigned long long)tiley;
+    key++;
+
+    return key;
+}
+
+static boolean ChillPath_FindVisitedNode(int tilex, int tiley, int keys, unsigned long long pushState, int *nodeIndex)
+{
+    unsigned long long key = ChillPath_MakeSearchKey(tilex, tiley, keys, pushState);
+    unsigned int slot = ChillPath_HashSearchKey(key);
+
+    for(int probe = 0; probe < CHILL_PATHFIND_VISITED_HASH_SIZE; probe++)
+    {
+        if(!ChillVisitedHashUsed[slot])
+        {
+            return false;
+        }
+
+        if(ChillVisitedHashKeys[slot] == key)
+        {
+            if(nodeIndex)
+            {
+                *nodeIndex = ChillVisitedHashNodes[slot];
+            }
+
+            return true;
+        }
+
+        slot = (slot + 1) & (CHILL_PATHFIND_VISITED_HASH_SIZE - 1);
+    }
+
+    return false;
+}
+
+static boolean ChillPath_AddVisitedNode(int nodeIndex)
+{
+    ChillSearchNode *node = &ChillSearchNodes[nodeIndex];
+    unsigned long long key = ChillPath_MakeSearchKey(node->tilex, node->tiley, node->keys, node->pushState);
+    unsigned int slot = ChillPath_HashSearchKey(key);
+
+    for(int probe = 0; probe < CHILL_PATHFIND_VISITED_HASH_SIZE; probe++)
+    {
+        if(!ChillVisitedHashUsed[slot])
+        {
+            ChillVisitedHashUsed[slot] = 1;
+            ChillVisitedHashKeys[slot] = key;
+            ChillVisitedHashNodes[slot] = nodeIndex;
+            return true;
+        }
+
+        if(ChillVisitedHashKeys[slot] == key)
+        {
+            return false;
+        }
+
+        slot = (slot + 1) & (CHILL_PATHFIND_VISITED_HASH_SIZE - 1);
+    }
+
+    return false;
+}
+
+static int ChillPath_AppendSearchNode(int tilex, int tiley, int keys, unsigned long long pushState, int parent, int *tail)
+{
+    if(*tail >= CHILL_PATHFIND_MAX_SEARCH_NODES)
+    {
+        return -1;
+    }
+
+    int existingNode;
+
+    if(ChillPath_FindVisitedNode(tilex, tiley, keys, pushState, &existingNode))
+    {
+        return -1;
+    }
+
+    int nodeIndex = *tail;
+
+    ChillSearchNodes[nodeIndex].tilex = (short)tilex;
+    ChillSearchNodes[nodeIndex].tiley = (short)tiley;
+    ChillSearchNodes[nodeIndex].keys = (byte)(keys & (CHILL_PATHFIND_KEY_STATES - 1));
+    ChillSearchNodes[nodeIndex].pushState = pushState;
+    ChillSearchNodes[nodeIndex].parent = parent;
+
+    if(!ChillPath_AddVisitedNode(nodeIndex))
+    {
+        return -1;
+    }
+
+    ChillSearchQueue[*tail] = nodeIndex;
+    (*tail)++;
+
+    return nodeIndex;
+}
+
+static boolean ChillPath_IsBlockingForPushState(int tilex, int tiley, unsigned long long pushState)
+{
+    if(!ChillPath_InBounds(tilex, tiley))
+    {
+        return true;
+    }
+
+    return ChillPath_ActorAtWithPushState(tilex, tiley, pushState);
+}
+
+static boolean ChillPath_TryPushWallState(int standTileX, int standTileY, int pushTileX, int pushTileY, unsigned long long pushState, unsigned long long *newPushState)
+{
+    int pushWallIndex = ChillPath_PushWallIndexAt(pushTileX, pushTileY);
+
+    if(pushWallIndex < 0)
+    {
+        return false;
+    }
+
+    if(ChillPath_GetPushWallStateDigit(pushState, pushWallIndex) != 0)
+    {
+        return false;
+    }
+
+    int pushDirection = ChillPath_DirectionFromTileToTile(standTileX, standTileY, pushTileX, pushTileY);
+
+    if(pushDirection < 0)
+    {
+        return false;
+    }
+
+    int firstTileX = pushTileX + ChillPathDx[pushDirection];
+    int firstTileY = pushTileY + ChillPathDy[pushDirection];
+
+    if(ChillPath_IsBlockingForPushState(firstTileX, firstTileY, pushState))
+    {
+        return false;
+    }
+
+    int secondTileX = pushTileX + ChillPathDx[pushDirection] * 2;
+    int secondTileY = pushTileY + ChillPathDy[pushDirection] * 2;
+    int distance = 2;
+
+    if(ChillPath_IsBlockingForPushState(secondTileX, secondTileY, pushState))
+    {
+        distance = 1;
+    }
+
+    int digit = 1 + pushDirection;
+
+    if(distance == 2)
+    {
+        digit += 4;
+    }
+
+    if(newPushState)
+    {
+        *newPushState = ChillPath_SetPushWallStateDigit(pushState, pushWallIndex, digit);
+    }
+
+    return true;
+}
+
+static boolean ChillPath_CanMoveBetweenTilesWithPushState(int fromTileX, int fromTileY, int toTileX, int toTileY, int keys, unsigned long long pushState)
+{
+    if(!ChillPath_InBounds(fromTileX, fromTileY) || !ChillPath_InBounds(toTileX, toTileY))
+    {
+        return false;
+    }
+
+    if(!ChillPath_IsTileTraversableWithKeysAndPushState(toTileX, toTileY, keys, pushState))
+    {
+        return false;
+    }
+
+    int fromDoor = ChillPath_DoorIndexAt(fromTileX, fromTileY);
+    int toDoor = ChillPath_DoorIndexAt(toTileX, toTileY);
+
+    if(fromDoor >= 0 && !ChillPath_CanMoveThroughDoorEdge(fromDoor, fromTileX, fromTileY, toTileX, toTileY, keys))
+    {
+        return false;
+    }
+
+    if(toDoor >= 0 && !ChillPath_CanMoveThroughDoorEdge(toDoor, fromTileX, fromTileY, toTileX, toTileY, keys))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static boolean ChillPath_CopySparseSearchPath
 (
-    int foundIndex,
+    int foundNode,
     ChillPathPoint *path,
     int maxPathLength,
     int *pathLength,
@@ -1129,37 +1637,27 @@ static boolean ChillPath_CopySearchPath
 )
 {
     int reverseLength = 0;
-    int walkIndex = foundIndex;
+    int walkIndex = foundNode;
 
     while(walkIndex >= 0 && reverseLength < CHILL_PATHFIND_MAX_PATH)
     {
-        int tilex;
-        int tiley;
-        int keys;
+        ChillSearchNode *node = &ChillSearchNodes[walkIndex];
 
-        ChillPath_DecodeState(walkIndex, &tilex, &tiley, &keys);
-
-        ChillReversePath[reverseLength].tilex = tilex;
-        ChillReversePath[reverseLength].tiley = tiley;
+        ChillReversePath[reverseLength].tilex = node->tilex;
+        ChillReversePath[reverseLength].tiley = node->tiley;
         reverseLength++;
-
-        short parentX = ChillParentX[walkIndex];
-        short parentY = ChillParentY[walkIndex];
-        short parentKeys = ChillParentKeys[walkIndex];
-
-        if(parentX < 0 || parentY < 0 || parentKeys < 0)
-        {
-            break;
-        }
-
-        (void)keys;
-        walkIndex = ChillPath_StateIndex(parentX, parentY, parentKeys);
+        walkIndex = node->parent;
     }
 
     int outputLength = 0;
 
     for(int i = reverseLength - 1; i >= 0 && outputLength < maxPathLength; i--)
     {
+        if(outputLength > 0 && path[outputLength - 1].tilex == ChillReversePath[i].tilex && path[outputLength - 1].tiley == ChillReversePath[i].tiley)
+        {
+            continue;
+        }
+
         path[outputLength++] = ChillReversePath[i];
     }
 
@@ -1179,97 +1677,6 @@ static boolean ChillPath_CopySearchPath
     }
 
     return outputLength > 1;
-}
-
-static boolean ChillPath_TrimPathToFirstAction
-(
-    ChillPathPoint *path,
-    int *pathLength,
-    int startKeys,
-    int *targetTileX,
-    int *targetTileY
-)
-{
-    if(path == NULL || pathLength == NULL || *pathLength <= 1)
-    {
-        return false;
-    }
-
-    int keys = startKeys & (CHILL_PATHFIND_KEY_STATES - 1);
-
-    for(int i = 0; i < *pathLength; i++)
-    {
-        // The planner is allowed to use doors and pushwalls as part of a future
-        // route, but the visible guide must not draw through an unopened
-        // wall-like obstruction. Stop the current leg at the tile where the
-        // player can stand and press use. After the obstruction opens, the
-        // next frame will recalculate a fresh route through the new space.
-        if(i > 0)
-        {
-            int actionTileX = path[i].tilex;
-            int actionTileY = path[i].tiley;
-            boolean stopAtAction = false;
-
-            if(ChillPathfinder::IsPushableTile(actionTileX, actionTileY))
-            {
-                stopAtAction = true;
-            }
-            else
-            {
-                int doorIndex = ChillPath_DoorIndexAt(actionTileX, actionTileY);
-
-                if(doorIndex >= 0)
-                {
-                    doorobj_t *door = &doorobjlist[doorIndex];
-
-                    if(door->action != dr_open && door->action != dr_opening && doorposition[doorIndex] != 0xffff)
-                    {
-                        stopAtAction = true;
-                    }
-                }
-            }
-
-            if(stopAtAction)
-            {
-                *pathLength = i;
-
-                if(targetTileX)
-                {
-                    *targetTileX = actionTileX;
-                }
-
-                if(targetTileY)
-                {
-                    *targetTileY = actionTileY;
-                }
-
-                return true;
-            }
-        }
-
-        int nextKeys = ChillPath_KeysAfterEnteringTile(path[i].tilex, path[i].tiley, keys);
-
-        if((nextKeys & ~keys) != 0)
-        {
-            *pathLength = i + 1;
-
-            if(targetTileX)
-            {
-                *targetTileX = path[i].tilex;
-            }
-
-            if(targetTileY)
-            {
-                *targetTileY = path[i].tiley;
-            }
-
-            return true;
-        }
-
-        keys = nextKeys;
-    }
-
-    return false;
 }
 
 static boolean ChillPath_RunSearch
@@ -1315,24 +1722,19 @@ static boolean ChillPath_RunSearch
     }
 
     ChillPath_BuildKeyPickupTable();
-    memset(ChillVisited, 0, sizeof(ChillVisited));
+    ChillPath_BuildPushWallStateTable();
+    memset(ChillVisitedHashUsed, 0, sizeof(ChillVisitedHashUsed));
 
-    int initialKeys = ChillPath_KeysAfterEnteringTile(startx, starty, startKeys & (CHILL_PATHFIND_KEY_STATES - 1));
-    int startIndex = ChillPath_StateIndex(startx, starty, initialKeys);
-
-    ChillVisited[startIndex] = 1;
-    ChillParentX[startIndex] = -1;
-    ChillParentY[startIndex] = -1;
-    ChillParentKeys[startIndex] = -1;
-
+    int initialKeys = startKeys & (CHILL_PATHFIND_KEY_STATES - 1);
     int head = 0;
     int tail = 0;
 
-    ChillQueue[tail++] = startIndex;
+    if(ChillPath_AppendSearchNode(startx, starty, initialKeys, 0, -1, &tail) < 0)
+    {
+        return false;
+    }
 
-    int foundIndex = -1;
-    int foundTileX = -1;
-    int foundTileY = -1;
+    int foundNode = -1;
     int foundTargetTileX = -1;
     int foundTargetTileY = -1;
     int foundObjectiveIndex = -1;
@@ -1340,18 +1742,16 @@ static boolean ChillPath_RunSearch
 
     while(head < tail)
     {
-        int stateIndex = ChillQueue[head++];
-        int keys;
-        int tilex;
-        int tiley;
+        int nodeIndex = ChillSearchQueue[head++];
+        ChillSearchNode *node = &ChillSearchNodes[nodeIndex];
+        int tilex = node->tilex;
+        int tiley = node->tiley;
+        int keys = node->keys;
+        unsigned long long pushState = node->pushState;
 
-        ChillPath_DecodeState(stateIndex, &tilex, &tiley, &keys);
-
-        if(ChillPath_SearchTarget(searchMode, tilex, tiley, keys, &foundTargetTileX, &foundTargetTileY, &foundObjectiveIndex))
+        if(ChillPath_SearchTarget(searchMode, tilex, tiley, keys, pushState, &foundTargetTileX, &foundTargetTileY, &foundObjectiveIndex))
         {
-            foundIndex = stateIndex;
-            foundTileX = tilex;
-            foundTileY = tiley;
+            foundNode = nodeIndex;
             foundKeys = keys;
             break;
         }
@@ -1361,32 +1761,27 @@ static boolean ChillPath_RunSearch
             int nextx = tilex + ChillPathDx[i];
             int nexty = tiley + ChillPathDy[i];
 
-            if(!ChillPath_CanMoveBetweenTiles(tilex, tiley, nextx, nexty, keys, searchMode))
+            if(searchMode != CHILL_SEARCH_CLOSEST_PUSHABLE)
+            {
+                unsigned long long pushedState;
+
+                if(ChillPath_TryPushWallState(tilex, tiley, nextx, nexty, pushState, &pushedState))
+                {
+                    ChillPath_AppendSearchNode(tilex, tiley, keys, pushedState, nodeIndex, &tail);
+                }
+            }
+
+            if(!ChillPath_CanMoveBetweenTilesWithPushState(tilex, tiley, nextx, nexty, keys, pushState))
             {
                 continue;
             }
 
             int nextKeys = ChillPath_KeysAfterEnteringTile(nextx, nexty, keys);
-            int nextIndex = ChillPath_StateIndex(nextx, nexty, nextKeys);
-
-            if(ChillVisited[nextIndex])
-            {
-                continue;
-            }
-
-            ChillVisited[nextIndex] = 1;
-            ChillParentX[nextIndex] = (short)tilex;
-            ChillParentY[nextIndex] = (short)tiley;
-            ChillParentKeys[nextIndex] = (short)keys;
-
-            if(tail < CHILL_PATHFIND_STATE_COUNT)
-            {
-                ChillQueue[tail++] = nextIndex;
-            }
+            ChillPath_AppendSearchNode(nextx, nexty, nextKeys, pushState, nodeIndex, &tail);
         }
     }
 
-    if(foundIndex < 0)
+    if(foundNode < 0)
     {
         return false;
     }
@@ -1403,12 +1798,12 @@ static boolean ChillPath_RunSearch
 
     if(endTileX)
     {
-        *endTileX = foundTileX;
+        *endTileX = ChillSearchNodes[foundNode].tilex;
     }
 
     if(endTileY)
     {
-        *endTileY = foundTileY;
+        *endTileY = ChillSearchNodes[foundNode].tiley;
     }
 
     if(endKeys)
@@ -1421,55 +1816,7 @@ static boolean ChillPath_RunSearch
         *objectiveIndex = foundObjectiveIndex;
     }
 
-    return ChillPath_CopySearchPath(foundIndex, path, maxPathLength, pathLength, foundTargetTileX, foundTargetTileY);
-}
-
-
-static boolean ChillPath_FindFallbackPushableAction
-(
-    ChillPathPoint *path,
-    int maxPathLength,
-    int *pathLength,
-    int *targetTileX,
-    int *targetTileY,
-    int startKeys
-)
-{
-    if(player == NULL)
-    {
-        return false;
-    }
-
-    // If the requested objective is not currently reachable, the next useful
-    // world interaction may still be a pushwall. This happens on maps where
-    // the player begins in a room whose only exit is a pushable wall, or where
-    // the route first requires opening a secret wall before any real objective
-    // becomes reachable. We deliberately use the closest-pushable search here
-    // because it only succeeds from a tile that can activate the wall using the
-    // same side/direction rule as PushWall().
-    boolean found = ChillPath_RunSearch
-    (
-        player->tilex,
-        player->tiley,
-        startKeys,
-        CHILL_SEARCH_CLOSEST_PUSHABLE,
-        path,
-        maxPathLength,
-        pathLength,
-        targetTileX,
-        targetTileY,
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    );
-
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, startKeys, targetTileX, targetTileY);
-    }
-
-    return found;
+    return ChillPath_CopySparseSearchPath(foundNode, path, maxPathLength, pathLength, foundTargetTileX, foundTargetTileY);
 }
 
 boolean ChillPathfinder::FindClosestPushableTile
@@ -1505,14 +1852,6 @@ boolean ChillPathfinder::FindClosestPushableTile
         NULL
     );
 
-    if(found)
-    {
-        // The closest-pushable search target is the wall tile itself, but the
-        // player can only stand beside it and press use. Do not draw the floor
-        // trail into the still-solid pushwall tile, because that looks like the
-        // route goes straight through a wall.
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-    }
 
     return found;
 }
@@ -1550,13 +1889,8 @@ boolean ChillPathfinder::FindStandardExit
         NULL
     );
 
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-        return true;
-    }
 
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
+    return found;
 }
 
 boolean ChillPathfinder::FindSecretExit
@@ -1592,13 +1926,8 @@ boolean ChillPathfinder::FindSecretExit
         NULL
     );
 
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-        return true;
-    }
 
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
+    return found;
 }
 
 
@@ -1635,13 +1964,8 @@ boolean ChillPathfinder::FindClosestAmmo
         NULL
     );
 
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-        return true;
-    }
 
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
+    return found;
 }
 
 boolean ChillPathfinder::FindClosestAmmoWithEnemies
@@ -1677,13 +2001,8 @@ boolean ChillPathfinder::FindClosestAmmoWithEnemies
         NULL
     );
 
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-        return true;
-    }
 
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
+    return found;
 }
 
 boolean ChillPathfinder::FindClosestHealth
@@ -1719,13 +2038,8 @@ boolean ChillPathfinder::FindClosestHealth
         NULL
     );
 
-    if(found)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, gamestate.keys, targetTileX, targetTileY);
-        return true;
-    }
 
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, gamestate.keys);
+    return found;
 }
 
 static boolean ChillPath_AddObjective(int type, int tilex, int tiley, int pushx, int pushy)
@@ -1930,13 +2244,7 @@ boolean ChillPathfinder::FindHundredPercentPath
             NULL
         );
 
-        if(foundObjective)
-        {
-            ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
-            return true;
-        }
-
-        return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, currentKeys);
+        return foundObjective;
     }
 
     boolean foundExit = ChillPath_RunSearch
@@ -1976,12 +2284,6 @@ boolean ChillPathfinder::FindHundredPercentPath
         );
     }
 
-    if(foundExit)
-    {
-        ChillPath_TrimPathToFirstAction(path, pathLength, currentKeys, targetTileX, targetTileY);
-        return true;
-    }
-
-    return ChillPath_FindFallbackPushableAction(path, maxPathLength, pathLength, targetTileX, targetTileY, currentKeys);
+    return foundExit;
 }
 

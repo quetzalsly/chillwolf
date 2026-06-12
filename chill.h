@@ -17,6 +17,7 @@
 #define CHILL_HIGHLIGHT_MODE_KEY                 SDLK_COMMA
 #define CHILL_PATHFIND_MODE_KEY                  SDLK_PERIOD
 #define CHILL_PATH_DEBUG_KEY                      SDLK_l
+#define CHILL_PATH_DEBUG_DUMP_FILE                 "chill_debug_dump.json"
 
 //===========================================================================
 // Chill overlay text
@@ -75,6 +76,7 @@
 #define CHILL_PATH_ARROW_SPACING_GLOBAL          (TILEGLOBAL + (TILEGLOBAL / 3))
 #define CHILL_PATH_ARROW_SPEED_GLOBAL_PER_TIC    (TILEGLOBAL / 36)
 #define CHILL_PATH_MAX_DRAW_POINTS               512
+#define CHILL_PATH_VISIBLE_TILE_LIMIT           16
 
 typedef enum
 {
